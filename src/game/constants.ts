@@ -11,8 +11,8 @@ export const SURFACE_ROW = 10;
 export const CELL_SIZE = 12;
 
 // --- Timing ---
-export const TICKS_PER_DAY = 600;
-export const DAY_DURATION_SECONDS = 10;
+export const TICKS_PER_DAY = 1800;
+export const DAY_DURATION_SECONDS = 60;
 export const TICK_RATE_MS = 1000 / 30;
 
 // --- Ant Stats by Caste ---
@@ -34,9 +34,9 @@ export const ANT_STATS: Record<AntCaste, {
     speed: 0.25,
     attack: 8,
     carryCapacity: 0,
-    maxAge: 300000,
-    foodConsumption: 2.5,
-    proteinConsumption: 1.5,
+    maxAge: 900000,
+    foodConsumption: 0.83,
+    proteinConsumption: 0.5,
     pheromoneEmission: 0.8,
     fatigueRate: 0.0005,
     restRate: 0.002,
@@ -47,9 +47,9 @@ export const ANT_STATS: Record<AntCaste, {
     speed: 0.7,
     attack: 3,
     carryCapacity: 6,
-    maxAge: 72000,
-    foodConsumption: 0.4,
-    proteinConsumption: 0.05,
+    maxAge: 216000,
+    foodConsumption: 0.13,
+    proteinConsumption: 0.017,
     pheromoneEmission: 0.5,
     fatigueRate: 0.002,
     restRate: 0.005,
@@ -60,8 +60,8 @@ export const ANT_STATS: Record<AntCaste, {
     speed: 1.4,
     attack: 2,
     carryCapacity: 2,
-    maxAge: 45000,
-    foodConsumption: 0.7,
+    maxAge: 135000,
+    foodConsumption: 0.23,
     proteinConsumption: 0,
     pheromoneEmission: 0.7,
     fatigueRate: 0.003,
@@ -73,9 +73,9 @@ export const ANT_STATS: Record<AntCaste, {
     speed: 0.45,
     attack: 18,
     carryCapacity: 2,
-    maxAge: 55000,
-    foodConsumption: 1.0,
-    proteinConsumption: 1.5,
+    maxAge: 165000,
+    foodConsumption: 0.33,
+    proteinConsumption: 0.5,
     pheromoneEmission: 0.3,
     fatigueRate: 0.001,
     restRate: 0.003,
@@ -86,9 +86,9 @@ export const ANT_STATS: Record<AntCaste, {
     speed: 0.55,
     attack: 1,
     carryCapacity: 3,
-    maxAge: 65000,
-    foodConsumption: 0.5,
-    proteinConsumption: 0.3,
+    maxAge: 195000,
+    foodConsumption: 0.17,
+    proteinConsumption: 0.1,
     pheromoneEmission: 0.4,
     fatigueRate: 0.0015,
     restRate: 0.005,
@@ -99,9 +99,9 @@ export const ANT_STATS: Record<AntCaste, {
     speed: 0.55,
     attack: 5,
     carryCapacity: 10,
-    maxAge: 60000,
-    foodConsumption: 0.6,
-    proteinConsumption: 0.5,
+    maxAge: 180000,
+    foodConsumption: 0.2,
+    proteinConsumption: 0.17,
     pheromoneEmission: 0.4,
     fatigueRate: 0.002,
     restRate: 0.004,
@@ -112,8 +112,8 @@ export const ANT_STATS: Record<AntCaste, {
     speed: 0.45,
     attack: 2,
     carryCapacity: 4,
-    maxAge: 70000,
-    foodConsumption: 0.3,
+    maxAge: 210000,
+    foodConsumption: 0.1,
     proteinConsumption: 0,
     pheromoneEmission: 0.3,
     fatigueRate: 0.001,
@@ -373,70 +373,70 @@ export const EVENT_INFO: Record<EventType, {
   [EventType.Rain]: {
     name: 'Rain',
     description: 'Water floods the tunnels!',
-    duration: 300,
+    duration: 900,
     color: '#4A90B8',
     severity: 2,
   },
   [EventType.Drought]: {
     name: 'Drought',
     description: 'Water sources dry up.',
-    duration: 400,
+    duration: 1200,
     color: '#D2691E',
     severity: 2,
   },
   [EventType.Collapse]: {
     name: 'Tunnel Collapse',
     description: 'Unstable tunnels cave in!',
-    duration: 60,
+    duration: 180,
     color: '#8B4513',
     severity: 3,
   },
   [EventType.ColdSnap]: {
     name: 'Cold Snap',
     description: 'Temperature drops dangerously.',
-    duration: 200,
+    duration: 600,
     color: '#B0C4DE',
     severity: 2,
   },
   [EventType.HeatWave]: {
     name: 'Heat Wave',
     description: 'Extreme heat stress.',
-    duration: 250,
+    duration: 750,
     color: '#FF4500',
     severity: 2,
   },
   [EventType.ToxicFungus]: {
     name: 'Toxic Fungus',
     description: 'Dangerous mold grows in chambers.',
-    duration: 200,
+    duration: 600,
     color: '#9ACD32',
     severity: 3,
   },
   [EventType.Pesticide]: {
     name: 'Pesticide',
     description: 'Humans spray chemicals on the surface!',
-    duration: 300,
+    duration: 900,
     color: '#FF1493',
     severity: 4,
   },
   [EventType.EnemyRaid]: {
     name: 'Enemy Raid',
     description: 'A swarm of enemies attacks!',
-    duration: 200,
+    duration: 600,
     color: '#DC143C',
     severity: 4,
   },
   [EventType.Earthquake]: {
     name: 'Earthquake',
     description: 'The ground shakes violently!',
-    duration: 80,
+    duration: 240,
     color: '#696969',
     severity: 5,
   },
   [EventType.Flood]: {
     name: 'Flash Flood',
     description: 'Water rushes into the colony!',
-    duration: 150,
+    duration: 450,
     color: '#1E88E5',
     severity: 4,
   },
@@ -454,43 +454,43 @@ export const MIND_ABILITIES: Record<MindAbilityType, {
     name: 'Work Surge',
     description: 'Workers move 50% faster for a period.',
     cost: 20,
-    cooldown: 300,
-    duration: 200,
+    cooldown: 900,
+    duration: 600,
   },
   [MindAbilityType.TotalAlarm]: {
     name: 'Total Alarm',
     description: 'All soldiers rush to defend entrances.',
     cost: 30,
-    cooldown: 400,
-    duration: 150,
+    cooldown: 1200,
+    duration: 450,
   },
   [MindAbilityType.PerfectRoute]: {
     name: 'Perfect Route',
     description: 'All ants find optimal paths instantly.',
     cost: 25,
-    cooldown: 350,
-    duration: 250,
+    cooldown: 1050,
+    duration: 750,
   },
   [MindAbilityType.DefensiveSacrifice]: {
     name: 'Last Stand',
     description: 'Workers block tunnels to protect the queen.',
     cost: 40,
-    cooldown: 600,
-    duration: 100,
+    cooldown: 1800,
+    duration: 300,
   },
   [MindAbilityType.EmergencyMigration]: {
     name: 'Evacuation',
     description: 'Move eggs and queen to a safe chamber.',
     cost: 50,
-    cooldown: 800,
-    duration: 80,
+    cooldown: 2400,
+    duration: 240,
   },
   [MindAbilityType.ChemicalFury]: {
     name: 'Chemical Fury',
     description: 'All ants attack with doubled ferocity.',
     cost: 60,
-    cooldown: 1000,
-    duration: 150,
+    cooldown: 3000,
+    duration: 450,
   },
 };
 
@@ -512,15 +512,15 @@ export const TERRAIN_COLORS: Record<TerrainType, string> = {
 
 // --- Brood Timing ---
 export const BROOD_TIMING = {
-  eggToLarva: 120,
-  larvaToPupa: 200,
-  pupaToHatch: 160,
-  foodPerLarvaPerTick: 0.008,
+  eggToLarva: 360,
+  larvaToPupa: 600,
+  pupaToHatch: 480,
+  foodPerLarvaPerTick: 0.003,
 };
 
 // --- Pheromone Settings ---
 export const PHEROMONE_SETTINGS = {
-  decayRate: 0.0008,
+  decayRate: 0.0003,
   maxStrength: 1,
   spreadRate: 0.005,
   attractionRadius: 6,
@@ -581,4 +581,84 @@ export const SCORE_VALUES = {
   perEnemyKilled: 15,
   perBroodHatched: 5,
   queenAliveBonus: 100,
+};
+
+// --- Food Spoilage ---
+export const FOOD_SPOILAGE = {
+  decayRateOutsideStorage: 0.005, // 0.5% per day for food outside storage chambers
+  storageChamberProtection: 0.5,  // 50% reduction in spoilage inside food storage
+  granaryProtection: 0.7,         // 70% reduction in spoilage inside granary
+};
+
+// --- Emergency Rationing ---
+export const EMERGENCY_RATIONING = {
+  foodThreshold: 10,              // Below this food amount, emergency mode triggers
+  nonEssentialStopChance: 0.7,    // Chance non-essential ants switch to foraging
+};
+
+// --- Colony Mind Passive Bonuses ---
+export const COLONY_MIND_BONUSES = {
+  tier1: { consciousness: 25, workSpeedBonus: 0.05, attackBonus: 0, eggRateBonus: 0, pathfindBonus: 0 },
+  tier2: { consciousness: 50, workSpeedBonus: 0.10, attackBonus: 0, eggRateBonus: 0, pathfindBonus: 0.05 },
+  tier3: { consciousness: 75, workSpeedBonus: 0.15, attackBonus: 0.10, eggRateBonus: 0, pathfindBonus: 0.05 },
+  tier4: { consciousness: 100, workSpeedBonus: 0.20, attackBonus: 0.10, eggRateBonus: 0.20, pathfindBonus: 0.10 },
+  idleDecayRate: 0.005,           // Consciousness decay per idle ant per tick
+};
+
+// --- Event System Enhancements ---
+export const EVENT_SETTINGS = {
+  warningTicksBefore: 450,        // Announce events 150 ticks before they hit
+  comboChance: 0.35,              // 35% chance of event combo after triggering
+  intensityScalePerAnt: 0.02,     // Event intensity scales up per ant (capped)
+  maxIntensityScale: 2.0,         // Maximum event intensity multiplier
+};
+
+// --- Event Combos (chained events) ---
+export const EVENT_COMBOS: Record<string, EventType[]> = {
+  drought: [EventType.HeatWave],
+  rain: [EventType.Flood],
+  heat_wave: [EventType.Drought],
+  flood: [EventType.Collapse],
+};
+
+// --- Caste Switching ---
+export const CASTE_SWITCH = {
+  healthCostPercent: 0.3,         // Lose 30% health when switching castes
+  attackMultiplier: 0.6,          // Emergency soldiers have 60% normal attack
+  healthMultiplier: 0.7,          // Emergency soldiers have 70% normal health
+};
+
+// --- Combat Enhancements ---
+export const COMBAT_SETTINGS = {
+  formationDefenseBonus: 0.15,    // 15% damage reduction per nearby soldier ally (max 2)
+  formationRadius: 2.5,           // Distance to count as "in formation"
+  rallyPointRadius: 8,            // Defend pheromone creates rally point within this radius
+  lootCollectionRange: 4,         // Workers auto-collect loot within this range of kill
+  casualtyReportThreshold: 2,     // Report casualties when this many ants are lost in a window
+  casualtyReportWindow: 300,      // Ticks to track casualty window
+};
+
+// --- Enemy AI Enhancements ---
+export const ENEMY_AI = {
+  retreatHealthPercent: 0.3,      // Enemies flee below 30% health
+  packCohesionRange: 12,          // Range for pack behavior (rival ants/termites)
+  packBlendFactor: 0.35,          // How much enemies blend toward group center
+  threatAssessmentRange: 15,      // Range to assess colony strength
+  spiderWebRadius: 3,             // Spider web zone radius
+  spiderWebSlowFactor: 0.5,       // Ants in web zone move at 50% speed
+  spiderWebCooldown: 900,         // Ticks between web creation
+  antlionPitRadius: 3,            // Antlion pit trap radius
+  antlionPitPullStrength: 0.12,   // Pull strength per tick in pit
+  patrolRouteLength: 4,           // Number of patrol waypoints for territorial enemies
+};
+
+// --- Caste Role Weights for Priority Scoring ---
+export const CASTE_ROLE_WEIGHTS: Record<AntCaste, Record<string, number>> = {
+  [AntCaste.Queen]: { defend: 0.1, forage: 0.1, excavate: 0.1, nurse: 0.1, build: 0.1, cultivate: 0.1, explore: 0.1, rest: 0.5 },
+  [AntCaste.Worker]: { defend: 0.3, forage: 1.5, excavate: 1.0, nurse: 0.4, build: 0.6, cultivate: 0.3, explore: 0.3, rest: 0.5 },
+  [AntCaste.Scout]: { defend: 0.1, forage: 0.5, excavate: 0.2, nurse: 0.1, build: 0.1, cultivate: 0.1, explore: 2.0, rest: 0.3 },
+  [AntCaste.Soldier]: { defend: 2.0, forage: 0.2, excavate: 0.1, nurse: 0.1, build: 0.2, cultivate: 0.0, explore: 0.3, rest: 0.4 },
+  [AntCaste.Nurse]: { defend: 0.1, forage: 0.3, excavate: 0.1, nurse: 2.0, build: 0.2, cultivate: 0.3, explore: 0.1, rest: 0.5 },
+  [AntCaste.Builder]: { defend: 0.3, forage: 0.3, excavate: 1.5, nurse: 0.1, build: 2.0, cultivate: 0.2, explore: 0.2, rest: 0.4 },
+  [AntCaste.Cultivator]: { defend: 0.1, forage: 0.4, excavate: 0.2, nurse: 0.2, build: 0.3, cultivate: 2.0, explore: 0.1, rest: 0.4 },
 };

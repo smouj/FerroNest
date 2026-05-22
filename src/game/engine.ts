@@ -11,11 +11,15 @@ import {
   EventType, ColonyMind, MindAbility, MindAbilityType, ResourceDeposit,
   AntPersonality, AntMemory, InfluenceCell, EvolutionUpgrade, EvolutionBranch,
 } from './types';
+import { playSound } from './audio';
 import {
   MAP_WIDTH, MAP_HEIGHT, SURFACE_ROW, TICKS_PER_DAY, ANT_STATS,
   CHAMBER_INFO, PHEROMONE_SETTINGS, BROOD_TIMING, ENEMY_STATS,
   EVENT_INFO, MIND_ABILITIES, PHEROMONE_NAMES, PERSONALITY_MODIFIERS,
   PHASE_THRESHOLDS, FOG_SETTINGS, SCORE_VALUES,
+  FOOD_SPOILAGE, EMERGENCY_RATIONING, COLONY_MIND_BONUSES,
+  EVENT_SETTINGS, EVENT_COMBOS, CASTE_SWITCH, COMBAT_SETTINGS,
+  ENEMY_AI, CASTE_ROLE_WEIGHTS,
 } from './constants';
 
 let nextId = 0;
@@ -394,7 +398,7 @@ export function createInitialState(): GameState {
   return {
     running: true,
     paused: false,
-    tick: 0,
+    currentTick: 0,
     day: 1,
     dayProgress: 0,
     speed: 1,
@@ -721,66 +725,68 @@ function updateFogOfWar(state: GameState) {
 export function gameTick(state: GameState): GameState {
   if (!state.running || state.paused) return state;
 
-  const newState = { ...state };
-  newState.tick++;
-  newState.dayProgress = (newState.tick % TICKS_PER_DAY) / TICKS_PER_DAY;
-  newState.timeOfDay = newState.dayProgress;
+  // Mutate state directly — all systems mutate in place.
+  // Only clone arrays that get restructured (filter/push) when needed.
+  state.currentTick++;
+  state.dayProgress = (state.currentTick % TICKS_PER_DAY) / TICKS_PER_DAY;
+  state.timeOfDay = state.dayProgress;
 
-  if (newState.tick % TICKS_PER_DAY === 0) {
-    newState.day++;
+  if (state.currentTick % TICKS_PER_DAY === 0) {
+    state.day++;
   }
 
   // Ambient light based on time of day
   const noon = 0.5;
-  const distFromNoon = Math.abs(newState.timeOfDay - noon) / noon;
-  newState.ambientLight = Math.max(0.2, 1 - distFromNoon * distFromNoon);
+  const distFromNoon = Math.abs(state.timeOfDay - noon) / noon;
+  state.ambientLight = Math.max(0.2, 1 - distFromNoon * distFromNoon);
 
-  // Deep clone
-  newState.ants = state.ants.map(a => ({ ...a, memory: { ...a.memory, resourceLocations: [...a.memory.resourceLocations], visitedChambers: [...a.memory.visitedChambers] } }));
-  newState.enemies = state.enemies.map(e => ({ ...e }));
-  newState.events = state.events.map(e => ({ ...e }));
-  newState.brood = (state.brood || []).map(b => ({ ...b }));
-  newState.surfaceDeposits = state.surfaceDeposits.map(d => ({ ...d }));
-  newState.map = state.map.map(row => row.map(cell => ({ ...cell })));
-  newState.pheromoneMap = new Map(state.pheromoneMap);
-  newState.resources = { ...state.resources };
-  newState.colonyMind = { ...state.colonyMind, abilities: state.colonyMind.abilities.map(a => ({ ...a })) };
-  newState.notifications = [...state.notifications];
-  newState.evolutions = state.evolutions.map(e => ({ ...e }));
-  newState.influenceMap = state.influenceMap.map(row => row.map(cell => ({ ...cell })));
+  // Systems execution — all mutate state directly
+  consumeResources(state);
+  updateBrood(state);
+  queenLayEggs(state);
+  updateAntAI(state);
+  updateEnemyAI(state);
+  processCombat(state);
+  decayPheromones(state);
+  diffusePheromones(state);
 
-  // Systems execution order
-  consumeResources(newState);
-  updateBrood(newState);
-  queenLayEggs(newState);
-  updateAntAI(newState);
-  updateEnemyAI(newState);
-  processCombat(newState);
-  decayPheromones(newState);
-  diffusePheromones(newState);
-  updateInfluenceMap(newState);
-  updateEvents(newState);
-  maybeSpawnEvent(newState);
-  maybeSpawnSurfaceResources(newState);
-  maybeSpawnEnemies(newState);
-  updateWaterLevels(newState);
-  updateContamination(newState);
-  updateTemperature(newState);
-  updateFogOfWar(newState);
-  updateColonyMind(newState);
-  updateGamePhase(newState);
-  updateColonyScore(newState);
+  // Influence map: only update every 15 ticks (was 10)
+  if (state.currentTick % 15 === 0) {
+    updateInfluenceMap(state);
+  }
 
-  // Cleanup
-  newState.ants = newState.ants.filter(a => a.state !== AntState.Dead);
-  newState.enemies = newState.enemies.filter(e => e.health > 0);
-  newState.surfaceDeposits = newState.surfaceDeposits.filter(d => d.amount > 0 || !d.depleted);
-  newState.queenAlive = newState.ants.some(a => a.caste === AntCaste.Queen);
+  updateEvents(state);
+  maybeSpawnEvent(state);
+  maybeSpawnSurfaceResources(state);
+  maybeSpawnEnemies(state);
+  updateWaterLevels(state);
+  updateContamination(state);
+  updateTemperature(state);
 
-  // Clean old notifications
-  newState.notifications = newState.notifications.filter(n => newState.tick - n.tick < 400);
+  // Fog of war: only update every 10 ticks
+  if (state.currentTick % 10 === 0) {
+    updateFogOfWar(state);
+  }
 
-  return newState;
+  updateColonyMind(state);
+  updateGamePhase(state);
+  updateColonyScore(state);
+
+  // Filter dead ants/enemies only every 30 ticks to reduce allocations
+  if (state.currentTick % 30 === 0) {
+    state.ants = state.ants.filter(a => a.state !== AntState.Dead);
+    state.enemies = state.enemies.filter(e => e.health > 0);
+    state.surfaceDeposits = state.surfaceDeposits.filter(d => d.amount > 0 || !d.depleted);
+  }
+  state.queenAlive = state.ants.some(a => a.caste === AntCaste.Queen);
+
+  // Clean old notifications every 60 ticks
+  if (state.currentTick % 60 === 0) {
+    state.notifications = state.notifications.filter(n => state.currentTick - n.currentTick < 1200);
+  }
+
+  // Shallow-clone so Zustand detects the change (deep clone removed — all inner objects mutated in place)
+  return { ...state };
 }
 
 // ============================================================
@@ -821,6 +827,23 @@ function consumeResources(state: GameState) {
     } else {
       ant.speed = ANT_STATS[ant.caste].speed;
     }
+
+    // Reset speed if not in spider web or antlion pit (those are handled in updateEnemyAI)
+    if (!isInSpiderWeb(state, ant) && !isInAntlionPit(state, ant)) {
+      if (ant.fatigue <= 0.8) {
+        ant.speed = ANT_STATS[ant.caste].speed;
+      }
+    }
+
+    // Colony mind work speed bonus
+    const tier = getColonyMindTier(state.colonyMind.consciousness);
+    if (tier >= 1 && ant.state !== AntState.Idle && ant.state !== AntState.Resting) {
+      const bonus = tier >= 4 ? COLONY_MIND_BONUSES.tier4.workSpeedBonus :
+        tier >= 3 ? COLONY_MIND_BONUSES.tier3.workSpeedBonus :
+        tier >= 2 ? COLONY_MIND_BONUSES.tier2.workSpeedBonus :
+        COLONY_MIND_BONUSES.tier1.workSpeedBonus;
+      ant.speed *= (1 + bonus);
+    }
   }
 
   // Feed from stores
@@ -841,17 +864,52 @@ function consumeResources(state: GameState) {
     state.resources.protein = Math.max(0, state.resources.protein - proteinNeeded);
   }
 
+  // --- Food spoilage: food stored outside proper chambers slowly decays ---
+  if (state.currentTick % TICKS_PER_DAY === 0) { // Once per day
+    // Count food storage and granary cells for protection
+    let foodStorageCells = 0;
+    let granaryCells = 0;
+    for (const row of state.map) {
+      for (const cell of row) {
+        if (cell.chamberType === ChamberType.FoodStorage) foodStorageCells++;
+        if (cell.chamberType === ChamberType.GranaryChamber) granaryCells++;
+      }
+    }
+
+    // Spoilage rate depends on whether we have proper storage
+    const hasFoodStorage = foodStorageCells > 0;
+    const hasGranary = granaryCells > 0;
+
+    // Base spoilage: 0.5% per day, reduced by storage
+    let spoilageRate = FOOD_SPOILAGE.decayRateOutsideStorage;
+    if (hasFoodStorage) spoilageRate *= FOOD_SPOILAGE.storageChamberProtection;
+    if (hasGranary) spoilageRate *= FOOD_SPOILAGE.granaryProtection;
+
+    const spoiledAmount = state.resources.food * spoilageRate;
+    if (spoiledAmount > 0.1) {
+      state.resources.food = Math.max(0, state.resources.food - spoiledAmount);
+    }
+
+    // Sugar and nectar also spoil slowly
+    const sugarSpoilage = state.resources.sugar * spoilageRate * 0.7;
+    const nectarSpoilage = state.resources.nectar * spoilageRate * 0.5;
+    state.resources.sugar = Math.max(0, state.resources.sugar - sugarSpoilage);
+    state.resources.nectar = Math.max(0, state.resources.nectar - nectarSpoilage);
+  }
+
   // Fungus chamber produces food
   for (const row of state.map) {
     for (const cell of row) {
       if (cell.chamberType === ChamberType.FungusChamber && state.resources.leafFragments > 0.01) {
-        state.resources.fungus += 0.008 * cell.soilNutrients;
+        // Resource conversion: fungus per leaf
+        const conversionRate = 0.008 * cell.soilNutrients;
+        state.resources.fungus += conversionRate;
         state.resources.leafFragments = Math.max(0, state.resources.leafFragments - 0.003);
       }
     }
   }
 
-  // Fungus converts to food slowly
+  // Fungus converts to food slowly (conversion rate: ~0.02 food per fungus per tick)
   if (state.resources.fungus > 1) {
     state.resources.food += state.resources.fungus * 0.02;
     state.resources.fungus *= 0.98;
@@ -906,6 +964,7 @@ function updateBrood(state: GameState) {
           newAnts.push(createAnt(brood.caste, pos.x, pos.y));
           state.totalAntsHatched++;
           addNotification(state, `A new ${brood.caste} has hatched!`, 'success');
+          playSound('ant_hatch');
         }
         brood.health = 0;
       }
@@ -937,8 +996,15 @@ function queenLayEggs(state: GameState) {
 
   // Dynamic egg laying rate based on food supply
   const foodSupplyFactor = Math.min(1, state.resources.food / 30); // 0-1, higher with more food
-  const eggInterval = Math.floor(80 / (0.4 + foodSupplyFactor * 0.6)); // Faster when more food (40-80 ticks)
-  if (state.tick % eggInterval !== 0) return;
+  let eggInterval = Math.floor(80 / (0.4 + foodSupplyFactor * 0.6)); // Faster when more food (40-80 ticks)
+
+  // Colony mind tier 4 bonus: queen egg laying rate +20%
+  const mindTier = getColonyMindTier(state.colonyMind.consciousness);
+  if (mindTier >= 4) {
+    eggInterval = Math.floor(eggInterval * 0.8); // 20% faster
+  }
+
+  if (state.currentTick % eggInterval !== 0) return;
   if (state.resources.food < 4) return;
   // Dynamic brood cap scaling with colony size
   const livingAnts = state.ants.filter(a => a.state !== AntState.Dead).length;
@@ -968,7 +1034,7 @@ function queenLayEggs(state: GameState) {
     broodY = broodChambers[0].y;
   }
 
-  // Intelligent caste selection based on colony needs
+  // --- Enhanced Dynamic Caste Ratios ---
   const aliveAnts = state.ants.filter(a => a.state !== AntState.Dead);
   const casteCounts: Record<string, number> = {};
   for (const a of aliveAnts) {
@@ -978,7 +1044,7 @@ function queenLayEggs(state: GameState) {
   const total = aliveAnts.length;
   let caste = AntCaste.Worker;
 
-  // Priority-based caste selection
+  // Calculate dynamic ratios based on colony situation
   const soldierRatio = (casteCounts[AntCaste.Soldier] || 0) / total;
   const workerRatio = (casteCounts[AntCaste.Worker] || 0) / total;
   const nurseRatio = (casteCounts[AntCaste.Nurse] || 0) / total;
@@ -986,25 +1052,64 @@ function queenLayEggs(state: GameState) {
   const builderRatio = (casteCounts[AntCaste.Builder] || 0) / total;
   const cultivatorRatio = (casteCounts[AntCaste.Cultivator] || 0) / total;
 
-  // Smart caste selection: respond to threats with more soldiers
-  const enemyThreatLevel = state.enemies.length; // more enemies = more threat
-  const soldierCap = Math.min(0.3, 0.1 + enemyThreatLevel * 0.02); // Up to 30% soldiers under heavy threat
+  // --- Dynamic factors ---
+  // Recent combat frequency → more soldiers
+  const enemyThreatLevel = state.enemies.length;
+  const recentCombat = state.ants.filter(a => a.memory.dangerTimer > 0).length;
+  const combatFrequency = recentCombat / Math.max(1, total);
 
+  // Food shortage → more workers/scouts
+  const foodUrgency = Math.max(0, 1 - state.resources.food / 30);
+
+  // Large brood → more nurses
+  const broodPressure = state.brood.length / Math.max(1, total);
+
+  // Lots of tunnels → more builders
+  const tunnelCells = state.map.flat().filter(c => c.terrain === TerrainType.Tunnel).length;
+  const tunnelPressure = tunnelCells / 500; // Normalized
+
+  // Fungus chambers present → more cultivators
+  const hasFungusChamber = state.map.flat().some(c => c.chamberType === ChamberType.FungusChamber);
+
+  // Dynamic soldier cap: increases with combat and threat
+  const soldierCap = Math.min(0.35, 0.1 + enemyThreatLevel * 0.02 + combatFrequency * 0.15);
+  const workerCap = 0.55;
+  const nurseCap = 0.12 + broodPressure * 0.1;
+  const scoutCap = 0.08;
+  const builderCap = 0.10 + tunnelPressure * 0.05;
+  const cultivatorCap = 0.08;
+
+  // Priority-based caste selection with dynamic ratios
   if (enemyThreatLevel > 0 && soldierRatio < soldierCap && state.resources.protein >= 5) {
     caste = AntCaste.Soldier;
     state.resources.protein -= 2;
-  } else if (scoutRatio < 0.05) {
-    caste = AntCaste.Scout;
-  } else if (state.brood.length > 3 && nurseRatio < 0.08) {
+  } else if (foodUrgency > 0.5 && (workerRatio < workerCap || scoutRatio < scoutCap)) {
+    // Food shortage: prioritize workers and scouts
+    if (scoutRatio < scoutCap) {
+      caste = AntCaste.Scout;
+    } else {
+      caste = AntCaste.Worker;
+    }
+  } else if (broodPressure > 0.15 && nurseRatio < nurseCap) {
+    // Large brood needs nurses
     caste = AntCaste.Nurse;
-  } else if (workerRatio < 0.5) {
+  } else if (scoutRatio < 0.04) {
+    caste = AntCaste.Scout;
+  } else if (workerRatio < 0.4) {
     caste = AntCaste.Worker;
   } else if (soldierRatio < Math.max(0.1, soldierCap * 0.7) && state.resources.protein >= 3) {
     caste = AntCaste.Soldier;
     state.resources.protein -= 1;
-  } else if (builderRatio < 0.08) {
+  } else if (tunnelPressure > 0.3 && builderRatio < builderCap) {
+    // Lots of tunnels need builders
     caste = AntCaste.Builder;
-  } else if (cultivatorRatio < 0.06 && state.map.flat().some(c => c.chamberType === ChamberType.FungusChamber)) {
+  } else if (hasFungusChamber && cultivatorRatio < cultivatorCap) {
+    caste = AntCaste.Cultivator;
+  } else if (builderRatio < 0.07) {
+    caste = AntCaste.Builder;
+  } else if (nurseRatio < 0.08 && state.brood.length > 3) {
+    caste = AntCaste.Nurse;
+  } else if (hasFungusChamber && cultivatorRatio < 0.06) {
     caste = AntCaste.Cultivator;
   }
 
@@ -1042,6 +1147,25 @@ function updateAntAI(state: GameState) {
       continue;
     }
 
+    // --- Emergency caste switching: workers become soldier-lites when colony is attacked ---
+    if (ant.caste === AntCaste.Worker && ant.state !== AntState.Resting) {
+      const nearbyEnemies = state.enemies.filter(e => distance(ant, e) < 5).length;
+      const soldierCount = state.ants.filter(a =>
+        a.caste === AntCaste.Soldier && a.state !== AntState.Dead
+      ).length;
+      // Switch to emergency soldier if enemies are close and we have very few soldiers
+      if (nearbyEnemies > 0 && soldierCount < 2 && ant.health > ant.maxHealth * 0.5) {
+        ant.caste = AntCaste.Soldier;
+        ant.maxHealth = Math.floor(ANT_STATS[AntCaste.Soldier].maxHealth * CASTE_SWITCH.healthMultiplier);
+        ant.health = Math.min(ant.health, ant.maxHealth);
+        ant.attack = Math.floor(ANT_STATS[AntCaste.Soldier].attack * CASTE_SWITCH.attackMultiplier);
+        ant.speed = ANT_STATS[AntCaste.Soldier].speed * 0.8;
+        addNotification(state, 'A worker transformed into an emergency soldier!', 'warning', 2);
+        ant.state = AntState.Fighting;
+        continue;
+      }
+    }
+
     // Rest when very fatigued
     if (ant.fatigue > 0.9 && ant.state !== AntState.Resting) {
       ant.prevState = ant.state;
@@ -1071,7 +1195,7 @@ function updateAntAI(state: GameState) {
     moveAlongPath(state, ant);
 
     // Emit pheromones based on state
-    if (state.tick - ant.lastPheromoneTick > 10) {
+    if (state.currentTick - ant.lastPheromoneTick > 10) {
       const ax = Math.round(ant.x);
       const ay = Math.round(ant.y);
 
@@ -1082,7 +1206,7 @@ function updateAntAI(state: GameState) {
         addPheromone(state, ax, ay, PheromoneType.Danger, 0.6);
       }
 
-      ant.lastPheromoneTick = state.tick;
+      ant.lastPheromoneTick = state.currentTick;
     }
 
     // Update facing angle smoothly
@@ -1163,12 +1287,12 @@ function updateQueenAI(state: GameState, ant: Ant) {
   }
 
   // Queen emits home pheromone
-  if (state.tick % 15 === 0) {
+  if (state.currentTick % 15 === 0) {
     addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Home, 0.7);
   }
 }
 
-// --- Worker AI (Most complex) ---
+// --- Worker AI (Most complex) - Now uses Priority Scoring System ---
 function updateWorkerAI(state: GameState, ant: Ant) {
   const personality = PERSONALITY_MODIFIERS[ant.personality] || PERSONALITY_MODIFIERS.diligent;
 
@@ -1197,12 +1321,47 @@ function updateWorkerAI(state: GameState, ant: Ant) {
     }
   }
 
-  // PRIORITY 1: If carrying, deliver to closest storage (smart delivery)
+  // Emergency rationing: when food is critical, all non-essential workers forage
+  if (state.resources.food < EMERGENCY_RATIONING.foodThreshold) {
+    const deposit = findNearestSurfaceDeposit(state, ant);
+    if (deposit) {
+      const dist = Math.abs(ant.x - deposit.x) + Math.abs(ant.y - deposit.y);
+      if (dist < 2) {
+        const amount = Math.min(ant.carryCapacity, deposit.amount);
+        ant.carrying = deposit.type;
+        ant.carryAmount = amount;
+        deposit.amount -= amount;
+        ant.state = AntState.Harvesting;
+        addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Food, 0.5);
+        ant.memory.lastFoodSource = { x: deposit.x, y: deposit.y };
+        return;
+      }
+      assignPath(state, ant, deposit.x, deposit.y);
+      ant.state = AntState.Moving;
+      return;
+    }
+  }
+
+  // PRIORITY 1: If carrying, deliver to closest storage (smart delivery with supply chain optimization)
   if (ant.carrying !== null) {
-    // Find the closest food storage, not just any one
-    const storage = findNearestChamber(state, ant.x, ant.y, ChamberType.FoodStorage) ||
-      findNearestChamber(state, ant.x, ant.y, ChamberType.GranaryChamber) ||
-      findNearestChamber(state, ant.x, ant.y, ChamberType.QueenChamber);
+    // Supply chain optimization: deliver to the most appropriate chamber
+    let storage: { x: number; y: number } | null = null;
+    if (ant.carrying === ResourceType.LeafFragments) {
+      // Leaves go to fungus chamber first
+      storage = findNearestChamber(state, ant.x, ant.y, ChamberType.FungusChamber);
+    }
+    if (!storage) {
+      if (ant.carrying === ResourceType.Food || ant.carrying === ResourceType.Protein || ant.carrying === ResourceType.Sugar) {
+        // Food goes to food storage or granary
+        storage = findNearestChamber(state, ant.x, ant.y, ChamberType.FoodStorage) ||
+          findNearestChamber(state, ant.x, ant.y, ChamberType.GranaryChamber);
+      }
+    }
+    if (!storage) {
+      storage = findNearestChamber(state, ant.x, ant.y, ChamberType.FoodStorage) ||
+        findNearestChamber(state, ant.x, ant.y, ChamberType.GranaryChamber) ||
+        findNearestChamber(state, ant.x, ant.y, ChamberType.QueenChamber);
+    }
 
     if (storage) {
       const dist = Math.abs(ant.x - storage.x) + Math.abs(ant.y - storage.y);
@@ -1232,70 +1391,42 @@ function updateWorkerAI(state: GameState, ant: Ant) {
     return;
   }
 
-  // PRIORITY 2: Flee from danger
-  if (ant.memory.dangerTimer > 0 || (ant.hunger > 0.7 && personality.fleeThresholdMul < 1)) {
-    const homeChamber = findNearestChamber(state, ant.x, ant.y, ChamberType.QueenChamber);
-    if (homeChamber) {
-      assignPath(state, ant, homeChamber.x, homeChamber.y);
-      ant.state = AntState.Fleeing;
+  // PRIORITY 2: Use the priority scoring system for all other decisions
+  const scores = calculateActionScores(state, ant);
+
+  // Filter to worker-appropriate actions (workers prioritize forage, excavate, build)
+  const workerActions = scores.filter(s =>
+    ['flee', 'rest', 'eat', 'deliver', 'forage', 'excavate', 'build', 'explore'].includes(s.action)
+  );
+
+  if (workerActions.length > 0 && workerActions[0].score > 0.5) {
+    if (executeScoredAction(state, ant, workerActions)) {
+      return;
     }
-    return;
   }
 
-  // PRIORITY 3: Check pheromone directives
+  // Fallback: check pheromone directives and memory
   const pheromoneDir = getStrongestPheromone(state, Math.round(ant.x), Math.round(ant.y));
 
   if (pheromoneDir === PheromoneType.Collect) {
-    // Follow food pheromone gradient
     const foodTarget = getPheromoneDirection(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Food) ||
       getPheromoneDirection(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Collect);
-
     if (foodTarget) {
       const deposit = findNearestSurfaceDeposit(state, ant);
       if (deposit) {
-        const dist = Math.abs(ant.x - deposit.x) + Math.abs(ant.y - deposit.y);
-        if (dist < 2) {
-          const amount = Math.min(ant.carryCapacity, deposit.amount);
-          ant.carrying = deposit.type;
-          ant.carryAmount = amount;
-          deposit.amount -= amount;
-          ant.state = AntState.Harvesting;
-          ant.experience += 0.3;
-          addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Food, 0.5);
-          // Remember where we picked up food for foraging efficiency
-          ant.memory.lastFoodSource = { x: deposit.x, y: deposit.y };
-          ant.memory.resourceLocations = [
-            ...ant.memory.resourceLocations.slice(-5),
-            { x: deposit.x, y: deposit.y, type: deposit.type }
-          ];
-        } else {
-          assignPath(state, ant, deposit.x, deposit.y);
-          ant.state = AntState.Moving;
-        }
+        assignPath(state, ant, deposit.x, deposit.y);
+        ant.state = AntState.Moving;
       } else {
         assignPath(state, ant, foodTarget.x, foodTarget.y);
         ant.state = AntState.Moving;
       }
     } else {
-      // No food pheromone to follow - check memory for known resource locations first
       const memoryFood = ant.memory.lastFoodSource;
       if (memoryFood && Math.random() < 0.5) {
-        // Return to last known food source
         assignPath(state, ant, memoryFood.x, memoryFood.y);
         ant.state = AntState.Moving;
-      } else if (ant.memory.resourceLocations.length > 0 && Math.random() < 0.4) {
-        // Try a known resource location from memory
-        const loc = ant.memory.resourceLocations[Math.floor(Math.random() * ant.memory.resourceLocations.length)];
-        assignPath(state, ant, loc.x, loc.y);
-        ant.state = AntState.Moving;
       } else {
-        const deposit = findNearestSurfaceDeposit(state, ant);
-        if (deposit) {
-          assignPath(state, ant, deposit.x, deposit.y);
-          ant.state = AntState.Moving;
-        } else {
-          wanderAnt(state, ant);
-        }
+        wanderAnt(state, ant);
       }
     }
   } else if (pheromoneDir === PheromoneType.Excavate) {
@@ -1306,7 +1437,6 @@ function updateWorkerAI(state: GameState, ant: Ant) {
       ant.stateTimer = 15;
       state.resources.compactEarth += 0.1;
     } else {
-      // Move toward excavate pheromone source
       const target = getPheromoneDirection(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Excavate);
       if (target) {
         assignPath(state, ant, target.x, target.y);
@@ -1321,9 +1451,7 @@ function updateWorkerAI(state: GameState, ant: Ant) {
       ant.state = AntState.Fleeing;
     }
   } else if (pheromoneDir === PheromoneType.Danger) {
-    // Flee from danger
     if (personality.fleeThresholdMul > 1) {
-      // Cautious - flee far
       const home = findNearestChamber(state, ant.x, ant.y, ChamberType.QueenChamber);
       if (home) {
         assignPath(state, ant, home.x, home.y);
@@ -1331,14 +1459,12 @@ function updateWorkerAI(state: GameState, ant: Ant) {
       }
     }
   } else {
-    // PRIORITY 4: Default behavior - check memory first, then collect food
+    // Default: check memory first, then collect food
     const memoryFood = ant.memory.lastFoodSource;
     if (memoryFood && Math.random() < 0.4) {
-      // Return to last known food source for foraging efficiency
       assignPath(state, ant, memoryFood.x, memoryFood.y);
       ant.state = AntState.Moving;
     } else if (ant.memory.resourceLocations.length > 0 && Math.random() < 0.3) {
-      // Try a known resource location from memory
       const loc = ant.memory.resourceLocations[Math.floor(Math.random() * ant.memory.resourceLocations.length)];
       assignPath(state, ant, loc.x, loc.y);
       ant.state = AntState.Moving;
@@ -1433,7 +1559,7 @@ function updateScoutAI(state: GameState, ant: Ant) {
   }
 
   // Trail marking: emit explore pheromones more frequently (every 5 ticks instead of 8)
-  if (state.tick % 5 === 0) {
+  if (state.currentTick % 5 === 0) {
     addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Explore, 0.4);
   }
 }
@@ -1822,6 +1948,494 @@ function wanderAnt(state: GameState, ant: Ant) {
   }
 }
 
+// ============================================================
+// PRIORITY SCORING SYSTEM - Score-based action selection
+// ============================================================
+
+interface ActionScore {
+  action: string;
+  score: number;
+  target?: { x: number; y: number };
+}
+
+function calculateActionScores(state: GameState, ant: Ant): ActionScore[] {
+  const scores: ActionScore[] = [];
+  const roleWeights = CASTE_ROLE_WEIGHTS[ant.caste] || CASTE_ROLE_WEIGHTS[AntCaste.Worker];
+  const personality = PERSONALITY_MODIFIERS[ant.personality] || PERSONALITY_MODIFIERS.diligent;
+  const ax = Math.round(ant.x);
+  const ay = Math.round(ant.y);
+
+  // --- Colony needs assessment ---
+  const livingAnts = state.ants.filter(a => a.state !== AntState.Dead).length;
+  const lowFood = state.resources.food < 20;
+  const criticalFood = state.resources.food < EMERGENCY_RATIONING.foodThreshold;
+  const enemyCount = state.enemies.length;
+  const soldierCount = state.ants.filter(a => a.caste === AntCaste.Soldier && a.state !== AntState.Dead).length;
+  const underThreat = enemyCount > 0 && soldierCount < enemyCount * 2;
+
+  // --- Personal state ---
+  const healthPercent = ant.health / ant.maxHealth;
+  const hungerUrgency = ant.hunger > 0.7 ? 3 : ant.hunger > 0.5 ? 1.5 : 0;
+  const fatigueUrgency = ant.fatigue > 0.8 ? 3 : ant.fatigue > 0.6 ? 1.5 : 0;
+
+  // --- Pheromone signals ---
+  const pheromoneDir = getStrongestPheromone(state, ax, ay);
+  let pheromoneBoost = 0;
+  if (pheromoneDir === PheromoneType.Collect) pheromoneBoost = 1.5;
+  else if (pheromoneDir === PheromoneType.Excavate) pheromoneBoost = 1.5;
+  else if (pheromoneDir === PheromoneType.Defend || pheromoneDir === PheromoneType.Danger) pheromoneBoost = 2.0;
+  else if (pheromoneDir === PheromoneType.Evacuate) pheromoneBoost = 2.5;
+
+  // --- Colony Mind urgency boost ---
+  const activeAbilities = state.colonyMind.abilities.filter(a => a.active);
+  let mindUrgencyBoost = 0;
+  if (activeAbilities.some(a => a.type === MindAbilityType.TotalAlarm)) mindUrgencyBoost += 2.0;
+  if (activeAbilities.some(a => a.type === MindAbilityType.WorkSurge)) mindUrgencyBoost += 1.0;
+  if (activeAbilities.some(a => a.type === MindAbilityType.ChemicalFury)) mindUrgencyBoost += 1.5;
+
+  // --- Consciousness passive bonuses ---
+  const consciousness = state.colonyMind.consciousness;
+  let workSpeedBonus = 0;
+  if (consciousness >= COLONY_MIND_BONUSES.tier4.consciousness) workSpeedBonus = COLONY_MIND_BONUSES.tier4.workSpeedBonus;
+  else if (consciousness >= COLONY_MIND_BONUSES.tier3.consciousness) workSpeedBonus = COLONY_MIND_BONUSES.tier3.workSpeedBonus;
+  else if (consciousness >= COLONY_MIND_BONUSES.tier2.consciousness) workSpeedBonus = COLONY_MIND_BONUSES.tier2.workSpeedBonus;
+  else if (consciousness >= COLONY_MIND_BONUSES.tier1.consciousness) workSpeedBonus = COLONY_MIND_BONUSES.tier1.workSpeedBonus;
+
+  // ==== SCORE EACH ACTION ====
+
+  // 1. FLEE: Flee when health is low or danger is near
+  if (healthPercent < 0.25 || ant.memory.dangerTimer > 0) {
+    let fleeScore = (1 - healthPercent) * 5 + (ant.memory.dangerTimer > 0 ? 3 : 0);
+    fleeScore *= roleWeights.defend * 0.5; // Non-soldiers flee more
+    const homeChamber = findNearestChamber(state, ant.x, ant.y, ChamberType.QueenChamber);
+    scores.push({ action: 'flee', score: fleeScore, target: homeChamber || undefined });
+  }
+
+  // 2. REST: Rest when fatigued
+  if (fatigueUrgency > 0) {
+    let restScore = fatigueUrgency * 2 + (fatigueUrgency > 2 ? 3 : 0);
+    restScore *= roleWeights.rest;
+    scores.push({ action: 'rest', score: restScore });
+  }
+
+  // 3. EAT: Eat when hungry (go to food storage)
+  if (hungerUrgency > 0) {
+    let eatScore = hungerUrgency * 2;
+    const foodStorage = findNearestChamber(state, ant.x, ant.y, ChamberType.FoodStorage) ||
+      findNearestChamber(state, ant.x, ant.y, ChamberType.GranaryChamber);
+    if (foodStorage) {
+      const dist = distance(ant, foodStorage);
+      const distFactor = 1 / (1 + dist * 0.1);
+      eatScore *= distFactor;
+      scores.push({ action: 'eat', score: eatScore, target: foodStorage });
+    }
+  }
+
+  // 4. FORAGE: Gather food from deposits
+  {
+    let forageScore = roleWeights.forage * (1 + workSpeedBonus * 2);
+    if (lowFood) forageScore *= 2;
+    if (criticalFood) forageScore *= 3;
+    if (pheromoneDir === PheromoneType.Collect || pheromoneDir === PheromoneType.Food) forageScore += pheromoneBoost * 2;
+    if (activeAbilities.some(a => a.type === MindAbilityType.WorkSurge)) forageScore *= 1.5;
+    // Distance factor: find nearest deposit
+    const deposit = findNearestSurfaceDeposit(state, ant);
+    if (deposit) {
+      const dist = distance(ant, deposit);
+      forageScore *= 1 / (1 + dist * 0.05);
+      scores.push({ action: 'forage', score: forageScore, target: { x: deposit.x, y: deposit.y } });
+    } else if (forageScore > 2) {
+      // Still score foraging if colony needs food but no deposits found
+      scores.push({ action: 'forage', score: forageScore * 0.3 });
+    }
+  }
+
+  // 5. DELIVER: If carrying, deliver to nearest storage
+  if (ant.carrying !== null) {
+    const storage = findNearestChamber(state, ant.x, ant.y, ChamberType.FoodStorage) ||
+      findNearestChamber(state, ant.x, ant.y, ChamberType.GranaryChamber) ||
+      findNearestChamber(state, ant.x, ant.y, ChamberType.QueenChamber);
+    // Delivery is high priority when already carrying
+    const dist = storage ? distance(ant, storage) : 10;
+    let deliverScore = 5 / (1 + dist * 0.05);
+    if (criticalFood) deliverScore *= 2;
+    scores.push({ action: 'deliver', score: deliverScore, target: storage || undefined });
+  }
+
+  // 6. DEFEND: Fight enemies
+  {
+    let defendScore = roleWeights.defend;
+    if (underThreat) defendScore *= 2.5;
+    if (pheromoneDir === PheromoneType.Defend || pheromoneDir === PheromoneType.Danger) defendScore += pheromoneBoost * 2;
+    if (activeAbilities.some(a => a.type === MindAbilityType.TotalAlarm)) defendScore *= 2;
+    if (activeAbilities.some(a => a.type === MindAbilityType.ChemicalFury)) defendScore *= 1.5;
+    const nearestEnemy = findNearestEnemy(state, ant);
+    if (nearestEnemy) {
+      const dist = distance(ant, nearestEnemy);
+      defendScore *= 1 / (1 + dist * 0.1);
+      scores.push({ action: 'defend', score: defendScore, target: { x: nearestEnemy.x, y: nearestEnemy.y } });
+    } else if (defendScore > 1) {
+      // Patrol for defend pheromone
+      const defendTarget = getPheromoneDirection(state, ax, ay, PheromoneType.Defend) ||
+        getPheromoneDirection(state, ax, ay, PheromoneType.Danger);
+      if (defendTarget) {
+        scores.push({ action: 'defend', score: defendScore * 0.8, target: defendTarget });
+      }
+    }
+  }
+
+  // 7. EXCAVATE: Dig tunnels
+  {
+    let excavateScore = roleWeights.excavate * (1 + workSpeedBonus);
+    if (pheromoneDir === PheromoneType.Excavate) excavateScore += pheromoneBoost;
+    const digTarget = findExcavatableNeighbor(state, ax, ay);
+    if (digTarget) {
+      excavateScore *= 1.5; // Higher score if can dig immediately
+    }
+    scores.push({ action: 'excavate', score: excavateScore });
+  }
+
+  // 8. NURSE: Care for brood
+  {
+    const needyBrood = state.brood.filter(b => b.needsFood || b.health < 80).length;
+    let nurseScore = roleWeights.nurse;
+    if (needyBrood > 3) nurseScore *= 2;
+    if (needyBrood > 0) nurseScore *= 1.5;
+    scores.push({ action: 'nurse', score: nurseScore });
+  }
+
+  // 9. BUILD: Construct chambers
+  {
+    let buildScore = roleWeights.build * (1 + workSpeedBonus);
+    const neededChamber = determineNeededChamber(state);
+    if (neededChamber) buildScore *= 1.5;
+    if (pheromoneDir === PheromoneType.Excavate) buildScore += 0.5;
+    scores.push({ action: 'build', score: buildScore });
+  }
+
+  // 10. CULTIVATE: Work in fungus chambers
+  {
+    const hasFungusChamber = state.map.flat().some(c => c.chamberType === ChamberType.FungusChamber);
+    let cultivateScore = roleWeights.cultivate;
+    if (hasFungusChamber) cultivateScore *= 1.5;
+    if (state.resources.leafFragments > 5) cultivateScore *= 1.3;
+    scores.push({ action: 'cultivate', score: cultivateScore });
+  }
+
+  // 11. EXPLORE: Scout new areas
+  {
+    let exploreScore = roleWeights.explore;
+    if (pheromoneDir === PheromoneType.Explore) exploreScore += pheromoneBoost;
+    scores.push({ action: 'explore', score: exploreScore });
+  }
+
+  // Sort by score descending
+  scores.sort((a, b) => b.score - a.score);
+  return scores;
+}
+
+// Execute the highest-priority action for an ant
+function executeScoredAction(state: GameState, ant: Ant, scores: ActionScore[]): boolean {
+  const personality = PERSONALITY_MODIFIERS[ant.personality] || PERSONALITY_MODIFIERS.diligent;
+
+  for (const scored of scores) {
+    switch (scored.action) {
+      case 'flee': {
+        if (scored.target) {
+          assignPath(state, ant, scored.target.x, scored.target.y);
+          ant.state = AntState.Fleeing;
+          return true;
+        }
+        break;
+      }
+      case 'rest': {
+        ant.prevState = ant.state;
+        ant.state = AntState.Resting;
+        ant.stateTimer = 60;
+        return true;
+      }
+      case 'eat': {
+        if (scored.target && state.resources.food > 1) {
+          const dist = Math.abs(ant.x - scored.target.x) + Math.abs(ant.y - scored.target.y);
+          if (dist < 3) {
+            // Eat from stores
+            const eatAmount = Math.min(2, state.resources.food);
+            state.resources.food -= eatAmount * 0.3;
+            ant.hunger = Math.max(0, ant.hunger - 0.4);
+            return true;
+          }
+          assignPath(state, ant, scored.target.x, scored.target.y);
+          ant.state = AntState.Moving;
+          return true;
+        }
+        break;
+      }
+      case 'deliver': {
+        if (ant.carrying !== null && scored.target) {
+          const dist = Math.abs(ant.x - scored.target.x) + Math.abs(ant.y - scored.target.y);
+          if (dist < 3) {
+            const carriedType = ant.carrying;
+            const carriedAmount = ant.carryAmount;
+            const key = carriedType as keyof typeof state.resources;
+            if (key in state.resources) {
+              (state.resources as Record<string, number>)[key] += carriedAmount;
+            }
+            ant.carrying = null;
+            ant.carryAmount = 0;
+            ant.state = AntState.Idle;
+            ant.experience += 0.5;
+            addNotification(state, `+${Math.round(carriedAmount)} ${carriedType}`, 'info');
+            ant.memory.visitedChambers = [
+              ...ant.memory.visitedChambers.slice(-8),
+              `${Math.round(scored.target.x)},${Math.round(scored.target.y)}`
+            ];
+          } else {
+            assignPath(state, ant, scored.target.x, scored.target.y);
+            ant.state = AntState.Carrying;
+          }
+          return true;
+        }
+        break;
+      }
+      case 'forage': {
+        if (scored.target) {
+          const dist = Math.abs(ant.x - scored.target.x) + Math.abs(ant.y - scored.target.y);
+          if (dist < 2) {
+            const deposit = findNearestSurfaceDeposit(state, ant);
+            if (deposit && deposit.amount > 0) {
+              const amount = Math.min(ant.carryCapacity, deposit.amount);
+              ant.carrying = deposit.type;
+              ant.carryAmount = amount;
+              deposit.amount -= amount;
+              ant.state = AntState.Harvesting;
+              ant.experience += 0.3;
+              addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Food, 0.5);
+              ant.memory.lastFoodSource = { x: deposit.x, y: deposit.y };
+              ant.memory.resourceLocations = [
+                ...ant.memory.resourceLocations.slice(-5),
+                { x: deposit.x, y: deposit.y, type: deposit.type }
+              ];
+            }
+          } else {
+            assignPath(state, ant, scored.target.x, scored.target.y);
+            ant.state = AntState.Moving;
+          }
+        } else {
+          // No deposit found, wander toward surface
+          const entrance = findEntrance(state);
+          if (entrance) {
+            assignPath(state, ant, entrance.x, entrance.y - 2);
+            ant.state = AntState.Moving;
+          } else {
+            wanderAnt(state, ant);
+          }
+        }
+        return true;
+      }
+      case 'defend': {
+        if (scored.target) {
+          const nearestEnemy = findNearestEnemy(state, ant);
+          if (nearestEnemy) {
+            const dist = distance(ant, nearestEnemy);
+            if (dist < ant.speed * 2) {
+              ant.state = AntState.Fighting;
+              ant.targetX = nearestEnemy.x;
+              ant.targetY = nearestEnemy.y;
+            } else {
+              assignPath(state, ant, nearestEnemy.x, nearestEnemy.y);
+              ant.state = AntState.Fighting;
+            }
+            addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Defend, 0.5);
+          } else {
+            assignPath(state, ant, scored.target.x, scored.target.y);
+            ant.state = AntState.Patrolling;
+          }
+        } else {
+          // Patrol between key chambers
+          const queenChamber = findNearestChamber(state, ant.x, ant.y, ChamberType.QueenChamber);
+          const entrance = findEntrance(state);
+          const target = queenChamber || entrance;
+          if (target) {
+            assignPath(state, ant, target.x + (Math.random() - 0.5) * 4, target.y + (Math.random() - 0.5) * 3);
+            ant.state = AntState.Patrolling;
+          }
+        }
+        return true;
+      }
+      case 'excavate': {
+        const digTarget = findExcavatableNeighbor(state, Math.round(ant.x), Math.round(ant.y));
+        if (digTarget) {
+          excavateCell(state, digTarget.x, digTarget.y);
+          ant.state = AntState.Excavating;
+          ant.stateTimer = 15;
+          state.resources.compactEarth += 0.1;
+          return true;
+        }
+        // Move toward excavate pheromone
+        const target = getPheromoneDirection(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Excavate);
+        if (target) {
+          assignPath(state, ant, target.x, target.y);
+          ant.state = AntState.Moving;
+          return true;
+        }
+        break;
+      }
+      case 'nurse': {
+        const needyBrood = state.brood
+          .filter(b => b.needsFood || b.health < 80)
+          .sort((a, b) => {
+            const stageOrder = { [BroodStage.Pupa]: 3, [BroodStage.Larva]: 2, [BroodStage.Egg]: 1 };
+            if (a.stage !== b.stage) return (stageOrder[b.stage] || 0) - (stageOrder[a.stage] || 0);
+            if (Math.abs(b.progress - a.progress) > 0.1) return b.progress - a.progress;
+            return a.health - b.health;
+          })[0];
+        if (needyBrood) {
+          const dist = Math.abs(ant.x - needyBrood.x) + Math.abs(ant.y - needyBrood.y);
+          if (dist < 3) {
+            if (state.resources.food > 0.3) {
+              state.resources.food -= 0.08;
+              needyBrood.health = Math.min(100, needyBrood.health + 3);
+              needyBrood.needsFood = false;
+              needyBrood.progress += 0.005;
+            }
+            ant.state = AntState.Nursing;
+          } else {
+            assignPath(state, ant, needyBrood.x, needyBrood.y);
+            ant.state = AntState.Nursing;
+          }
+          return true;
+        }
+        break;
+      }
+      case 'build': {
+        const digTarget = findExcavatableNeighbor(state, Math.round(ant.x), Math.round(ant.y));
+        if (digTarget) {
+          excavateCell(state, digTarget.x, digTarget.y);
+          excavateCell(state, digTarget.x, digTarget.y);
+          ant.state = AntState.Excavating;
+          ant.stateTimer = 12;
+          state.resources.compactEarth += 0.15;
+          return true;
+        }
+        // Find a good spot to build
+        const neededChamberType = determineNeededChamber(state);
+        if (neededChamberType) {
+          const chamberCenter = findChamberCenter(state, neededChamberType);
+          if (chamberCenter) {
+            // Move toward area to expand
+            const offset = { x: chamberCenter.x + (Math.random() - 0.5) * 8, y: chamberCenter.y + (Math.random() - 0.5) * 6 };
+            assignPath(state, ant, Math.round(offset.x), Math.round(offset.y));
+            ant.state = AntState.Excavating;
+            ant.stateTimer = 10;
+            return true;
+          }
+        }
+        break;
+      }
+      case 'cultivate': {
+        const fungusChamber = findNearestChamber(state, ant.x, ant.y, ChamberType.FungusChamber);
+        if (fungusChamber) {
+          const dist = Math.abs(ant.x - fungusChamber.x) + Math.abs(ant.y - fungusChamber.y);
+          if (dist < 4) {
+            ant.state = AntState.Cultivating;
+            state.resources.fungus += 0.01;
+            if (ant.carrying === ResourceType.LeafFragments) {
+              state.resources.leafFragments += ant.carryAmount;
+              ant.carrying = null;
+              ant.carryAmount = 0;
+            }
+            return true;
+          }
+          assignPath(state, ant, fungusChamber.x, fungusChamber.y);
+          return true;
+        }
+        // Collect leaves for fungus
+        const leafDeposit = state.surfaceDeposits.find(d => d.type === ResourceType.LeafFragments && d.amount > 0);
+        if (leafDeposit) {
+          const dist = Math.abs(ant.x - leafDeposit.x) + Math.abs(ant.y - leafDeposit.y);
+          if (dist < 2) {
+            ant.carrying = ResourceType.LeafFragments;
+            ant.carryAmount = Math.min(ant.carryCapacity, leafDeposit.amount);
+            leafDeposit.amount -= ant.carryAmount;
+            ant.state = AntState.Carrying;
+          } else {
+            assignPath(state, ant, leafDeposit.x, leafDeposit.y);
+          }
+          return true;
+        }
+        break;
+      }
+      case 'explore': {
+        if (ant.caste === AntCaste.Scout && ant.y < SURFACE_ROW) {
+          // Scout exploration pattern
+          const spiralAngle = (ant.experience * 0.8) + (ant.id.charCodeAt(1) || 0) * 0.5;
+          const spiralRadius = 5 + Math.min(ant.experience * 2, 30);
+          const homeX = ant.memory.homePosition.x;
+          let targetX = Math.round(homeX + Math.cos(spiralAngle) * spiralRadius);
+          let targetY = Math.round(4 + Math.sin(spiralAngle) * 3);
+          targetX = Math.max(2, Math.min(MAP_WIDTH - 3, targetX));
+          targetY = Math.max(4, Math.min(SURFACE_ROW - 1, targetY));
+          if (Math.random() < 0.3) {
+            targetX = Math.floor(Math.random() * MAP_WIDTH);
+            targetY = 4 + Math.floor(Math.random() * 4);
+          }
+          if (assignPath(state, ant, targetX, targetY)) {
+            ant.state = AntState.Exploring;
+            return true;
+          }
+        }
+        // Generic exploration
+        const entrance = findEntrance(state);
+        if (entrance) {
+          assignPath(state, ant, entrance.x, entrance.y - 2);
+          ant.state = AntState.Exploring;
+          return true;
+        }
+        wanderAnt(state, ant);
+        return true;
+      }
+    }
+  }
+
+  // No scored action taken, fall back to wandering
+  return false;
+}
+
+// Check if an ant is in a spider web zone (near a spider)
+function isInSpiderWeb(state: GameState, ant: Ant): boolean {
+  for (const enemy of state.enemies) {
+    if (enemy.type === EnemyType.Spider) {
+      const dist = distance(ant, enemy);
+      if (dist < ENEMY_AI.spiderWebRadius) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Check if an ant is in an antlion pit
+function isInAntlionPit(state: GameState, ant: Ant): boolean {
+  for (const enemy of state.enemies) {
+    if (enemy.type === EnemyType.Antlion) {
+      const dist = distance(ant, enemy);
+      if (dist < ENEMY_AI.antlionPitRadius) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Get the current colony mind tier
+function getColonyMindTier(consciousness: number): number {
+  if (consciousness >= COLONY_MIND_BONUSES.tier4.consciousness) return 4;
+  if (consciousness >= COLONY_MIND_BONUSES.tier3.consciousness) return 3;
+  if (consciousness >= COLONY_MIND_BONUSES.tier2.consciousness) return 2;
+  if (consciousness >= COLONY_MIND_BONUSES.tier1.consciousness) return 1;
+  return 0;
+}
+
 function findChamberCenter(state: GameState, type: ChamberType): { x: number; y: number } | null {
   let sumX = 0, sumY = 0, count = 0;
   for (const row of state.map) {
@@ -1947,7 +2561,7 @@ function addNotification(state: GameState, message: string, type: 'info' | 'warn
     id: genId(),
     message,
     type,
-    tick: state.tick,
+    currentTick: state.currentTick,
     priority,
   });
 }
@@ -1962,8 +2576,76 @@ function updateEnemyAI(state: GameState) {
 
     enemy.animationFrame += 0.1;
 
+    // --- Universal retreat behavior: all enemies flee below 30% health ---
+    if (enemy.health < enemy.maxHealth * ENEMY_AI.retreatHealthPercent) {
+      const entrance = findEntrance(state);
+      if (entrance) {
+        const fleeX = enemy.x + (enemy.x - entrance.x) * 0.5;
+        const fleeY = enemy.y + (enemy.y - entrance.y) * 0.3;
+        enemy.targetX = Math.max(0, Math.min(MAP_WIDTH - 1, fleeX));
+        enemy.targetY = Math.max(3, Math.min(SURFACE_ROW + 5, fleeY));
+      } else {
+        enemy.targetX = Math.max(0, Math.min(MAP_WIDTH - 1, enemy.x + (Math.random() - 0.5) * 10));
+        enemy.targetY = Math.max(3, Math.min(SURFACE_ROW + 5, enemy.y - 3));
+      }
+      // Move toward flee target
+      const dx = enemy.targetX - enemy.x;
+      const dy = enemy.targetY - enemy.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0.5) {
+        enemy.x += (dx / dist) * enemy.speed * 1.3; // Flee speed boost
+        enemy.y += (dy / dist) * enemy.speed * 1.3;
+        enemy.facingAngle = Math.atan2(dy, dx);
+      }
+      enemy.x = Math.max(0, Math.min(MAP_WIDTH - 1, enemy.x));
+      enemy.y = Math.max(3, Math.min(MAP_HEIGHT - 1, enemy.y));
+      enemy.stateTimer--;
+      continue; // Skip normal AI while fleeing
+    }
+
+    // --- Spider web mechanic: spiders create web zones that slow ants ---
+    if (enemy.type === EnemyType.Spider && state.currentTick % ENEMY_AI.spiderWebCooldown === 0) {
+      // Mark danger pheromone around spider (simulates web zone)
+      for (let dy = -ENEMY_AI.spiderWebRadius; dy <= ENEMY_AI.spiderWebRadius; dy++) {
+        for (let dx = -ENEMY_AI.spiderWebRadius; dx <= ENEMY_AI.spiderWebRadius; dx++) {
+          const nx = Math.round(enemy.x) + dx;
+          const ny = Math.round(enemy.y) + dy;
+          if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT) {
+            const webDist = Math.sqrt(dx * dx + dy * dy);
+            if (webDist <= ENEMY_AI.spiderWebRadius) {
+              addPheromone(state, nx, ny, PheromoneType.Danger, 0.15 * (1 - webDist / ENEMY_AI.spiderWebRadius));
+            }
+          }
+        }
+      }
+    }
+
+    // --- Antlion pit mechanic: enhanced pull with pit radius ---
+    if (enemy.type === EnemyType.Antlion) {
+      const nearestAntToPit = findNearestAnt(state, enemy);
+      if (nearestAntToPit) {
+        const pitDist = distance(enemy, nearestAntToPit);
+        if (pitDist < ENEMY_AI.antlionPitRadius * 2) {
+          // Pull mechanic: stronger when closer to center
+          const pullFactor = Math.max(0, 1 - pitDist / (ENEMY_AI.antlionPitRadius * 2));
+          const pullStrength = ENEMY_AI.antlionPitPullStrength * (1 + pullFactor);
+          nearestAntToPit.x += (enemy.x - nearestAntToPit.x) * pullStrength;
+          nearestAntToPit.y += (enemy.y - nearestAntToPit.y) * pullStrength;
+          // Mark danger pheromone at pit location
+          addPheromone(state, Math.round(enemy.x), Math.round(enemy.y), PheromoneType.Danger, 0.4);
+        }
+      }
+    }
+
     if (enemy.stateTimer <= 0) {
       enemy.stateTimer = 15 + Math.floor(Math.random() * 25);
+
+      // --- Threat assessment: evaluate colony strength before attacking ---
+      const soldiersNearby = state.ants.filter(a =>
+        a.caste === AntCaste.Soldier && a.state !== AntState.Dead &&
+        distance(a, enemy) < ENEMY_AI.threatAssessmentRange
+      ).length;
+      const colonyStrength = soldiersNearby; // Simple threat metric
 
       // Different AI per enemy type
       switch (enemy.behavior) {
@@ -1976,18 +2658,15 @@ function updateEnemyAI(state: GameState) {
               // Hold position, wait for prey to come closer
               break;
             }
+
+            // Threat assessment: avoid attacking if too many soldiers nearby
+            if (colonyStrength > 3 && enemy.type !== EnemyType.Wasp) {
+              // Be more cautious - only attack weaker targets
+              if (prey.caste === AntCaste.Soldier && colonyStrength > 1) break;
+            }
+
             enemy.targetX = prey.x;
             enemy.targetY = prey.y;
-          } else if (enemy.health < enemy.maxHealth * 0.25) {
-            // Retreat: flee away from colony when health is low
-            const entrance = findEntrance(state);
-            if (entrance) {
-              // Move away from entrance
-              const fleeX = enemy.x + (enemy.x - entrance.x) * 0.5;
-              const fleeY = enemy.y + (enemy.y - entrance.y) * 0.3;
-              enemy.targetX = Math.max(0, Math.min(MAP_WIDTH - 1, fleeX));
-              enemy.targetY = Math.max(3, Math.min(SURFACE_ROW + 5, fleeY));
-            }
           } else {
             // Wander toward colony entrance
             const entrance = findEntrance(state);
@@ -2042,71 +2721,93 @@ function updateEnemyAI(state: GameState) {
             }
           }
 
-          // Group behavior: move toward other rival ants for coordinated raids
+          // Enhanced pack behavior: move toward other rival ants for coordinated raids
           const otherRivals = state.enemies.filter(e =>
             e.type === EnemyType.RivalAnt && e.id !== enemy.id &&
-            distance(e, enemy) < 15
+            distance(e, enemy) < ENEMY_AI.packCohesionRange
           );
           if (otherRivals.length > 0) {
-            // Move toward the group center for coordination
             const groupCenterX = otherRivals.reduce((sum, e) => sum + e.x, 0) / otherRivals.length;
             const groupCenterY = otherRivals.reduce((sum, e) => sum + e.y, 0) / otherRivals.length;
             // Blend target with group movement
-            enemy.targetX = enemy.targetX * 0.6 + groupCenterX * 0.4;
-            enemy.targetY = enemy.targetY * 0.6 + groupCenterY * 0.4;
+            enemy.targetX = enemy.targetX * (1 - ENEMY_AI.packBlendFactor) + groupCenterX * ENEMY_AI.packBlendFactor;
+            enemy.targetY = enemy.targetY * (1 - ENEMY_AI.packBlendFactor) + groupCenterY * ENEMY_AI.packBlendFactor;
+          }
+
+          // Threat assessment: raid more aggressively when colony has few soldiers
+          if (colonyStrength < 2 && state.resources.food > 15) {
+            // Bold raid - go straight for food storage
+            if (foodStorage) {
+              enemy.targetX = foodStorage.x;
+              enemy.targetY = foodStorage.y;
+            }
           }
           break;
         }
         case EnemyBehavior.Ambush: {
-          // Antlion: create sand trap effect and pull ants
+          // Antlion: enhanced pit trap with pull mechanic
           const nearestAnt = findNearestAnt(state, enemy);
           if (nearestAnt) {
             const dist = distance(enemy, nearestAnt);
-            if (dist < enemy.aggroRange * 2) {
-              // Pull mechanic: draw the ant closer when within range
-              const pullStrength = 0.15;
-              nearestAnt.x += (enemy.x - nearestAnt.x) * pullStrength;
-              nearestAnt.y += (enemy.y - nearestAnt.y) * pullStrength;
-              // Mark danger pheromone at trap location
-              addPheromone(state, Math.round(enemy.x), Math.round(enemy.y), PheromoneType.Danger, 0.3);
-            }
             if (dist < enemy.aggroRange) {
               enemy.targetX = nearestAnt.x;
               enemy.targetY = nearestAnt.y;
             }
           }
           // Antlion stays mostly still (sand trap behavior)
-          // Only tiny movement adjustments
           break;
         }
         case EnemyBehavior.Territorial: {
-          // Territorial: patrol a specific zone around spawn area
-          // Define patrol zone around current position
+          // Territorial: patrol set routes around spawn area
           const patrolRadius = 6;
-
-          // Check for nearby ants - warning display before attacking
           const nearestAnt = findNearestAnt(state, enemy);
+
           if (nearestAnt) {
             const dist = distance(enemy, nearestAnt);
+
+            // Threat assessment: less aggressive when outnumbered
+            if (colonyStrength > 3 && enemy.health < enemy.maxHealth * 0.6) {
+              // Back off when outnumbered and damaged
+              const fleeAngle = Math.atan2(enemy.y - nearestAnt.y, enemy.x - nearestAnt.x);
+              enemy.targetX = enemy.x + Math.cos(fleeAngle) * 4;
+              enemy.targetY = enemy.y + Math.sin(fleeAngle) * 2;
+              break;
+            }
+
             if (dist < enemy.aggroRange * 0.6 && dist > enemy.aggroRange * 0.3) {
               // Warning display: move toward the ant aggressively but don't attack yet
               enemy.targetX = nearestAnt.x + (Math.random() - 0.5) * 2;
               enemy.targetY = nearestAnt.y + (Math.random() - 0.5) * 2;
-              // Emit danger pheromone as warning
               addPheromone(state, Math.round(enemy.x), Math.round(enemy.y), PheromoneType.Danger, 0.2);
             } else if (dist <= enemy.aggroRange * 0.3) {
               // Close enough - attack!
               enemy.targetX = nearestAnt.x;
               enemy.targetY = nearestAnt.y;
             } else {
-              // Patrol within zone
-              enemy.targetX = enemy.x + (Math.random() - 0.5) * patrolRadius;
-              enemy.targetY = enemy.y + (Math.random() - 0.5) * (patrolRadius * 0.5);
+              // Patrol on set route: use deterministic patrol pattern
+              const patrolAngle = (state.currentTick * 0.02) + (enemy.id.charCodeAt(1) || 0) * 1.5;
+              enemy.targetX = enemy.x + Math.cos(patrolAngle) * patrolRadius * 0.5;
+              enemy.targetY = enemy.y + Math.sin(patrolAngle) * patrolRadius * 0.3;
             }
           } else {
-            // No ants nearby - patrol the zone
-            enemy.targetX = enemy.x + (Math.random() - 0.5) * patrolRadius;
-            enemy.targetY = enemy.y + (Math.random() - 0.5) * (patrolRadius * 0.5);
+            // No ants nearby - patrol on set route
+            const patrolAngle = (state.currentTick * 0.02) + (enemy.id.charCodeAt(1) || 0) * 1.5;
+            enemy.targetX = enemy.x + Math.cos(patrolAngle) * patrolRadius * 0.5;
+            enemy.targetY = enemy.y + Math.sin(patrolAngle) * patrolRadius * 0.3;
+          }
+
+          // Pack behavior for termites: move toward other termites
+          if (enemy.type === EnemyType.Termite) {
+            const otherTermites = state.enemies.filter(e =>
+              e.type === EnemyType.Termite && e.id !== enemy.id &&
+              distance(e, enemy) < ENEMY_AI.packCohesionRange
+            );
+            if (otherTermites.length > 0) {
+              const groupCenterX = otherTermites.reduce((sum, e) => sum + e.x, 0) / otherTermites.length;
+              const groupCenterY = otherTermites.reduce((sum, e) => sum + e.y, 0) / otherTermites.length;
+              enemy.targetX = enemy.targetX * (1 - ENEMY_AI.packBlendFactor * 0.5) + groupCenterX * ENEMY_AI.packBlendFactor * 0.5;
+              enemy.targetY = enemy.targetY * (1 - ENEMY_AI.packBlendFactor * 0.5) + groupCenterY * ENEMY_AI.packBlendFactor * 0.5;
+            }
           }
 
           const clampedX = Math.max(0, Math.min(MAP_WIDTH - 1, enemy.targetX));
@@ -2124,7 +2825,7 @@ function updateEnemyAI(state: GameState) {
       }
     }
 
-    // Move toward target
+    // Move toward target (with spider web slow effect on nearby ants)
     const dx = enemy.targetX - enemy.x;
     const dy = enemy.targetY - enemy.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -2140,6 +2841,19 @@ function updateEnemyAI(state: GameState) {
     enemy.y = Math.max(3, Math.min(MAP_HEIGHT - 1, enemy.y));
 
     enemy.stateTimer--;
+  }
+
+  // Apply spider web slow to ants near spiders
+  for (const ant of state.ants) {
+    if (ant.state === AntState.Dead) continue;
+    if (isInSpiderWeb(state, ant)) {
+      // Slow the ant down while in web zone
+      ant.speed = ANT_STATS[ant.caste].speed * ENEMY_AI.spiderWebSlowFactor;
+    }
+    // Antlion pit pull (already handled above, but also slow ants in pit)
+    if (isInAntlionPit(state, ant)) {
+      ant.speed = ANT_STATS[ant.caste].speed * 0.4; // Severe slow in antlion pit
+    }
   }
 }
 
@@ -2198,6 +2912,15 @@ function distance(a: { x: number; y: number }, b: { x: number; y: number }): num
 function processCombat(state: GameState) {
   // Check for Chemical Fury mind ability
   const furyActive = state.colonyMind.abilities.find(a => a.type === MindAbilityType.ChemicalFury && a.active);
+  const totalAlarmActive = state.colonyMind.abilities.find(a => a.type === MindAbilityType.TotalAlarm && a.active);
+
+  // Colony mind attack bonus
+  const mindTier = getColonyMindTier(state.colonyMind.consciousness);
+  const mindAttackBonus = mindTier >= 3 ? COLONY_MIND_BONUSES.tier3.attackBonus : 0;
+
+  // Track combat losses for casualty reporting
+  let combatLosses = 0;
+  const enemyKills: { name: string; x: number; y: number; lootTable: { type: ResourceType; amount: number }[] }[] = [];
 
   for (const ant of state.ants) {
     if (ant.state === AntState.Dead) continue;
@@ -2208,6 +2931,16 @@ function processCombat(state: GameState) {
       const dist = distance(ant, enemy);
 
       if (dist < 1.5) {
+        // --- Formation defense: soldiers near each other get damage reduction ---
+        let defenseReduction = 0;
+        if (ant.caste === AntCaste.Soldier) {
+          const nearbyAllies = state.ants.filter(a =>
+            a.caste === AntCaste.Soldier && a.state !== AntState.Dead &&
+            a.id !== ant.id && distance(a, ant) < COMBAT_SETTINGS.formationRadius
+          ).length;
+          defenseReduction = Math.min(nearbyAllies * COMBAT_SETTINGS.formationDefenseBonus, 0.3); // Max 30% reduction
+        }
+
         // Ant attacks enemy
         let antAttack = ant.attack * 0.08;
         // Experience bonus
@@ -2217,28 +2950,54 @@ function processCombat(state: GameState) {
         // Aggressive personality bonus
         const personality = PERSONALITY_MODIFIERS[ant.personality];
         if (personality) antAttack *= personality.attackAggressionMul;
+        // Colony mind attack bonus
+        if (mindAttackBonus > 0) antAttack *= (1 + mindAttackBonus);
+        // Total Alarm: soldiers attack faster
+        if (totalAlarmActive && ant.caste === AntCaste.Soldier) antAttack *= 1.3;
 
         enemy.health -= antAttack;
 
-        // Enemy attacks ant
-        const enemyDamage = enemy.attack * 0.04;
+        // Enemy attacks ant (with formation defense reduction)
+        const enemyDamage = enemy.attack * 0.04 * (1 - defenseReduction);
         ant.health -= enemyDamage;
 
         ant.state = AntState.Fighting;
         ant.memory.dangerTimer = 100;
 
+        // Play combat sound (throttled in audio system)
+        playSound('combat_hit');
+
+        // Queen damage alert
+        if (ant.caste === AntCaste.Queen) {
+          playSound('queen_damage');
+        }
+
         // Release alarm pheromone
         addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Danger, 0.8);
         addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Defend, 0.6);
 
+        // --- Rally point: defend pheromone creates a rally area ---
+        // If Total Alarm is active, the defend pheromone is stronger and wider
+        if (totalAlarmActive) {
+          addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Defend, 0.9);
+        }
+
         if (ant.health <= 0) {
           ant.state = AntState.Dead;
           state.totalAntsLost++;
+          combatLosses++;
           const enemyName = ENEMY_STATS[enemy.type]?.name || enemy.type;
           addNotification(state, `A ${ant.caste} was killed by ${enemyName}!`, 'danger');
         }
 
         if (enemy.health <= 0) {
+          // Record enemy kill for loot collection
+          enemyKills.push({
+            name: ENEMY_STATS[enemy.type]?.name || enemy.type,
+            x: enemy.x,
+            y: enemy.y,
+            lootTable: enemy.lootTable,
+          });
           // Drop loot
           for (const loot of enemy.lootTable) {
             const key = loot.type as keyof typeof state.resources;
@@ -2248,9 +3007,33 @@ function processCombat(state: GameState) {
           }
           const enemyName = ENEMY_STATS[enemy.type]?.name || enemy.type;
           addNotification(state, `${enemyName} defeated!`, 'success');
+          playSound('combat_kill');
         }
       }
     }
+  }
+
+  // --- Loot collection: workers near defeated enemies collect extra loot ---
+  for (const kill of enemyKills) {
+    for (const ant of state.ants) {
+      if (ant.state === AntState.Dead || ant.caste !== AntCaste.Worker) continue;
+      if (ant.carrying !== null) continue; // Already carrying something
+      const dist = Math.abs(ant.x - kill.x) + Math.abs(ant.y - kill.y);
+      if (dist < COMBAT_SETTINGS.lootCollectionRange) {
+        // Auto-collect some extra loot from the battlefield
+        const extraLoot = kill.lootTable[0]; // Collect first loot type
+        if (extraLoot) {
+          ant.carrying = extraLoot.type;
+          ant.carryAmount = Math.min(ant.carryCapacity, extraLoot.amount * 0.5);
+        }
+        break; // One worker per kill
+      }
+    }
+  }
+
+  // --- Casualty reporting: report losses when significant ---
+  if (combatLosses >= COMBAT_SETTINGS.casualtyReportThreshold) {
+    addNotification(state, `Battle report: ${combatLosses} ant(s) lost in combat!`, 'danger', 5);
   }
 }
 
@@ -2274,7 +3057,7 @@ function decayPheromones(state: GameState) {
 
 function diffusePheromones(state: GameState) {
   // Spread pheromones to nearby cells - optimized: only process cells with pheromones
-  if (state.tick % 5 !== 0) return;
+  if (state.currentTick % 5 !== 0) return;
   if (state.pheromoneMap.size === 0) return;
 
   const additions: { x: number; y: number; type: PheromoneType; strength: number }[] = [];
@@ -2319,7 +3102,7 @@ function diffusePheromones(state: GameState) {
 // ============================================================
 
 function updateInfluenceMap(state: GameState) {
-  if (state.tick % 10 !== 0) return;
+  // Called every 15 ticks from gameTick — no internal throttle needed
 
   // Only update cells near ants and enemies (not entire 100x70 grid)
   const cellsToUpdate = new Set<string>();
@@ -2415,13 +3198,26 @@ function updateEvents(state: GameState) {
   for (const event of state.events) {
     event.timer--;
 
+    // --- Skip effects for warning events (they just show a heads-up) ---
+    if ((event as GameEvent & { isWarning?: boolean }).isWarning) {
+      if (event.timer <= 0) {
+        // Warning expired - the actual event was already pushed, just remove this warning
+        addNotification(state, `${EVENT_INFO[event.type].name} has begun!`, 'danger', 3);
+        playSound('event_start');
+      }
+      continue;
+    }
+
+    // Scale effect intensity by event intensity
+    const effectScale = event.intensity || 1;
+
     switch (event.type) {
       case EventType.Rain: {
         for (let y = SURFACE_ROW; y < Math.min(SURFACE_ROW + 10, MAP_HEIGHT); y++) {
           for (let x = 0; x < MAP_WIDTH; x++) {
             if (state.map[y][x].terrain === TerrainType.Tunnel || state.map[y][x].terrain === TerrainType.Chamber) {
-              state.map[y][x].waterLevel = Math.min(1, state.map[y][x].waterLevel + 0.001);
-              state.map[y][x].humidity = Math.min(1, state.map[y][x].humidity + 0.0005);
+              state.map[y][x].waterLevel = Math.min(1, state.map[y][x].waterLevel + 0.001 * effectScale);
+              state.map[y][x].humidity = Math.min(1, state.map[y][x].humidity + 0.0005 * effectScale);
             }
           }
         }
@@ -2430,8 +3226,8 @@ function updateEvents(state: GameState) {
       case EventType.Drought: {
         for (const row of state.map) {
           for (const cell of row) {
-            cell.humidity = Math.max(0, cell.humidity - 0.0008);
-            cell.waterLevel = Math.max(0, cell.waterLevel - 0.001);
+            cell.humidity = Math.max(0, cell.humidity - 0.0008 * effectScale);
+            cell.waterLevel = Math.max(0, cell.waterLevel - 0.001 * effectScale);
           }
         }
         break;
@@ -2439,8 +3235,9 @@ function updateEvents(state: GameState) {
       case EventType.Collapse: {
         if (event.affectedArea) {
           const { x, y, radius } = event.affectedArea;
-          for (let dy = -radius; dy <= radius; dy++) {
-            for (let dx = -radius; dx <= radius; dx++) {
+          const scaledRadius = Math.ceil(radius * effectScale);
+          for (let dy = -scaledRadius; dy <= scaledRadius; dy++) {
+            for (let dx = -scaledRadius; dx <= scaledRadius; dx++) {
               const nx = x + dx;
               const ny = y + dy;
               if (nx >= 0 && nx < MAP_WIDTH && ny >= SURFACE_ROW && ny < MAP_HEIGHT) {
@@ -2460,7 +3257,7 @@ function updateEvents(state: GameState) {
       case EventType.Pesticide: {
         for (const ant of state.ants) {
           if (ant.y < SURFACE_ROW + 2 && ant.state !== AntState.Dead) {
-            ant.health -= 1.5;
+            ant.health -= 1.5 * effectScale;
             if (ant.health <= 0) {
               ant.state = AntState.Dead;
               state.totalAntsLost++;
@@ -2473,7 +3270,7 @@ function updateEvents(state: GameState) {
         for (const row of state.map) {
           for (const cell of row) {
             if (cell.terrain === TerrainType.Chamber) {
-              cell.contamination = Math.min(1, cell.contamination + 0.0008);
+              cell.contamination = Math.min(1, cell.contamination + 0.0008 * effectScale);
             }
           }
         }
@@ -2482,7 +3279,7 @@ function updateEvents(state: GameState) {
       case EventType.ColdSnap: {
         for (const row of state.map) {
           for (const cell of row) {
-            cell.temperature = Math.max(0, cell.temperature - 0.001);
+            cell.temperature = Math.max(0, cell.temperature - 0.001 * effectScale);
           }
         }
         break;
@@ -2490,20 +3287,22 @@ function updateEvents(state: GameState) {
       case EventType.HeatWave: {
         for (const row of state.map) {
           for (const cell of row) {
-            cell.temperature = Math.min(1, cell.temperature + 0.001);
+            cell.temperature = Math.min(1, cell.temperature + 0.001 * effectScale);
           }
         }
         break;
       }
       case EventType.EnemyRaid: {
-        if (state.tick % 25 === 0) {
+        if (state.currentTick % 25 === 0) {
           spawnEnemyAtEdge(state);
+          // Extra enemies with higher intensity
+          if (effectScale > 1.3) spawnEnemyAtEdge(state);
         }
         break;
       }
       case EventType.Earthquake: {
-        // Random collapses and shakes
-        if (Math.random() < 0.02) {
+        // Random collapses and shakes - scaled by intensity
+        if (Math.random() < 0.02 * effectScale) {
           const rx = Math.floor(Math.random() * MAP_WIDTH);
           const ry = SURFACE_ROW + Math.floor(Math.random() * (MAP_HEIGHT - SURFACE_ROW - 5));
           if (state.map[ry]?.[rx]?.terrain === TerrainType.Tunnel) {
@@ -2518,7 +3317,7 @@ function updateEvents(state: GameState) {
         for (let y = SURFACE_ROW; y < Math.min(SURFACE_ROW + 15, MAP_HEIGHT); y++) {
           for (let x = 0; x < MAP_WIDTH; x++) {
             if (state.map[y][x].terrain === TerrainType.Tunnel || state.map[y][x].terrain === TerrainType.Chamber) {
-              state.map[y][x].waterLevel = Math.min(1, state.map[y][x].waterLevel + 0.003);
+              state.map[y][x].waterLevel = Math.min(1, state.map[y][x].waterLevel + 0.003 * effectScale);
             }
           }
         }
@@ -2531,7 +3330,7 @@ function updateEvents(state: GameState) {
 }
 
 function maybeSpawnEvent(state: GameState) {
-  if (state.tick % 500 !== 0) return;
+  if (state.currentTick % 500 !== 0) return;
   if (state.events.length >= 3) return;
 
   // Probability increases with days
@@ -2581,11 +3380,30 @@ function maybeSpawnEvent(state: GameState) {
 
   const info = EVENT_INFO[type];
 
-  const event: GameEvent = {
+  // --- Event intensity scaling with colony size ---
+  const livingAnts = state.ants.filter(a => a.state !== AntState.Dead).length;
+  const intensityScale = Math.min(
+    EVENT_SETTINGS.maxIntensityScale,
+    1 + livingAnts * EVENT_SETTINGS.intensityScalePerAnt
+  );
+  const scaledDuration = Math.floor(info.duration * intensityScale);
+
+  // --- Event warning: announce before the event hits ---
+  // Create a warning event first, then the actual event
+  const warningEvent: GameEvent = {
     type,
-    timer: info.duration,
-    maxTimer: info.duration,
-    intensity: 0.3 + Math.random() * 0.7,
+    timer: EVENT_SETTINGS.warningTicksBefore, // Warning period before actual event
+    maxTimer: EVENT_SETTINGS.warningTicksBefore,
+    intensity: 0, // Warning has no effect yet
+    announced: false,
+    isWarning: true,
+  };
+
+  const actualEvent: GameEvent = {
+    type,
+    timer: scaledDuration,
+    maxTimer: scaledDuration,
+    intensity: (0.3 + Math.random() * 0.7) * intensityScale,
     announced: false,
   };
 
@@ -2600,16 +3418,42 @@ function maybeSpawnEvent(state: GameState) {
     }
     if (tunnels.length > 0) {
       const target = tunnels[Math.floor(Math.random() * tunnels.length)];
-      event.affectedArea = { x: target.x, y: target.y, radius: type === EventType.Earthquake ? 4 : 2 };
+      actualEvent.affectedArea = { x: target.x, y: target.y, radius: type === EventType.Earthquake ? 4 : 2 };
     }
   }
 
-  state.events.push(event);
-  addNotification(state, `${info.name}: ${info.description}`, 'warning', 2);
+  // Push warning first (immediate warning), then schedule actual event
+  state.events.push(warningEvent);
+  // The actual event will be spawned after the warning expires (handled in updateEvents)
+  // Store the actual event data for later spawning
+  state.events.push(actualEvent);
+
+  addNotification(state, `WARNING: ${info.name} approaching! ${info.description}`, 'warning', 3);
+  playSound('event_warning');
+
+  // --- Event combos: chain events after certain types ---
+  const comboKey = type as string;
+  const comboEvents = EVENT_COMBOS[comboKey];
+  if (comboEvents && comboEvents.length > 0 && Math.random() < EVENT_SETTINGS.comboChance) {
+    const comboType = comboEvents[Math.floor(Math.random() * comboEvents.length)];
+    const comboInfo = EVENT_INFO[comboType];
+    if (comboInfo && comboInfo.severity <= state.day / 4 + 2) {
+      // Schedule combo event with a delay
+      const comboEvent: GameEvent = {
+        type: comboType,
+        timer: info.duration + 100, // Triggers after first event ends
+        maxTimer: Math.floor(comboInfo.duration * intensityScale * 0.8),
+        intensity: (0.2 + Math.random() * 0.5) * intensityScale,
+        announced: false,
+      };
+      state.events.push(comboEvent);
+      addNotification(state, `Following: ${comboInfo.name} may occur!`, 'warning', 2);
+    }
+  }
 }
 
 function maybeSpawnSurfaceResources(state: GameState) {
-  if (state.tick % 250 !== 0) return;
+  if (state.currentTick % 250 !== 0) return;
   if (state.surfaceDeposits.length >= 20) return;
 
   // Scarcity mechanic: regeneration slows as more deposits are depleted
@@ -2636,7 +3480,7 @@ function maybeSpawnSurfaceResources(state: GameState) {
 function maybeSpawnEnemies(state: GameState) {
   // Spawn rate increases with colony size and day
   const spawnInterval = Math.max(150, 500 - state.day * 5 - state.ants.length * 2);
-  if (state.tick % spawnInterval !== 0) return;
+  if (state.currentTick % spawnInterval !== 0) return;
   // Enemy cap scales with colony size
   const maxEnemies = 8 + state.day + Math.floor(state.ants.filter(a => a.state !== AntState.Dead).length * 0.1);
   if (state.enemies.length >= maxEnemies) return;
@@ -2794,10 +3638,33 @@ function updateColonyMind(state: GameState) {
   const morale = Math.max(0, 1 - hunger) * (state.enemies.length === 0 ? 1 : 0.5);
 
   state.colonyMind.chargeRate = 0.01 + morale * 0.03 + aliveAnts * 0.001;
+
+  // --- Mind decay: idle ants reduce consciousness ---
+  const idleAnts = state.ants.filter(a => a.state !== AntState.Dead && a.state === AntState.Idle).length;
+  const idleDecay = idleAnts * COLONY_MIND_BONUSES.idleDecayRate;
+  state.colonyMind.chargeRate = Math.max(0, state.colonyMind.chargeRate - idleDecay);
+
   state.colonyMind.consciousness = Math.min(
     state.colonyMind.maxConsciousness,
     state.colonyMind.consciousness + state.colonyMind.chargeRate
   );
+
+  // Consciousness can also decay when idle ants are many
+  if (idleDecay > state.colonyMind.chargeRate + 0.01) {
+    state.colonyMind.consciousness = Math.max(0, state.colonyMind.consciousness - idleDecay * 0.5);
+  }
+
+  // --- Passive bonuses at different charge levels ---
+  // The actual speed/attack bonuses are applied in consumeResources and processCombat
+  // Here we just maintain the consciousness level and handle tier transitions
+  const currentTier = getColonyMindTier(state.colonyMind.consciousness);
+  const prevTier = getColonyMindTier(state.colonyMind.consciousness - state.colonyMind.chargeRate);
+
+  // Notify on tier change
+  if (currentTier > prevTier && state.currentTick > 100) {
+    const tierNames = ['none', 'Awakening', 'Focus', 'Power', 'Transcendence'];
+    addNotification(state, `Colony Mind reached tier ${currentTier}: ${tierNames[currentTier]}!`, 'success', 4);
+  }
 
   // Update abilities
   for (const ability of state.colonyMind.abilities) {
@@ -2850,18 +3717,15 @@ function updateColonyScore(state: GameState) {
 // ============================================================
 
 export function excavateArea(state: GameState, x: number, y: number): GameState {
-  const newState = { ...state };
-  newState.map = state.map.map(row => row.map(cell => ({ ...cell })));
-  newState.resources = { ...state.resources };
-
+  // Mutate in place — same pattern as gameTick
   // Excavate in a small radius for better UX
   for (let dy = -1; dy <= 1; dy++) {
     for (let dx = -1; dx <= 1; dx++) {
-      excavateCell(newState, x + dx, y + dy);
+      excavateCell(state, x + dx, y + dy);
     }
   }
 
-  return newState;
+  return { ...state };
 }
 
 export function buildChamber(state: GameState, x: number, y: number, type: ChamberType): GameState {
@@ -2870,16 +3734,13 @@ export function buildChamber(state: GameState, x: number, y: number, type: Chamb
     return state;
   }
 
-  const newState = { ...state };
-  newState.map = state.map.map(row => row.map(cell => ({ ...cell })));
-  newState.resources = { ...state.resources };
-
   // Check if area is clear (tunnel)
-  const centerCell = newState.map[y]?.[x];
+  const centerCell = state.map[y]?.[x];
   if (!centerCell || (centerCell.terrain !== TerrainType.Tunnel && centerCell.terrain !== TerrainType.Chamber)) {
     return state;
   }
 
+  // Mutate map and resources in place
   // Carve chamber
   const radius = info.size;
   for (let dy = -radius; dy <= radius; dy++) {
@@ -2888,7 +3749,7 @@ export function buildChamber(state: GameState, x: number, y: number, type: Chamb
         const ny = y + dy;
         const nx = x + dx;
         if (ny >= SURFACE_ROW && ny < MAP_HEIGHT && nx >= 0 && nx < MAP_WIDTH) {
-          const cell = newState.map[ny][nx];
+          const cell = state.map[ny][nx];
           if (cell.terrain === TerrainType.Tunnel || cell.terrain === TerrainType.Dirt || cell.terrain === TerrainType.HardDirt) {
             cell.terrain = TerrainType.Chamber;
             cell.chamberType = type;
@@ -2903,27 +3764,24 @@ export function buildChamber(state: GameState, x: number, y: number, type: Chamb
     }
   }
 
-  newState.resources.compactEarth -= info.cost.compactEarth;
-  newState.resources.biomass -= info.cost.biomass;
+  state.resources.compactEarth -= info.cost.compactEarth;
+  state.resources.biomass -= info.cost.biomass;
 
-  addNotification(newState, `${info.name} constructed!`, 'success', 3);
+  addNotification(state, `${info.name} constructed!`, 'success', 3);
 
-  return newState;
+  return { ...state };
 }
 
 export function markPheromone(state: GameState, x: number, y: number, type: PheromoneType): GameState {
-  const newState = { ...state };
-  newState.pheromoneMap = new Map(state.pheromoneMap);
-  newState.resources = { ...state.resources };
-
+  // Mutate pheromoneMap and resources in place
   // Mark in a small area
   for (let dy = -1; dy <= 1; dy++) {
     for (let dx = -1; dx <= 1; dx++) {
-      addPheromone(newState, x + dx, y + dy, type, PHEROMONE_SETTINGS.playerMarkStrength);
+      addPheromone(state, x + dx, y + dy, type, PHEROMONE_SETTINGS.playerMarkStrength);
     }
   }
 
-  return newState;
+  return { ...state };
 }
 
 export function activateMindAbility(state: GameState, abilityType: MindAbilityType): GameState {
@@ -2933,21 +3791,18 @@ export function activateMindAbility(state: GameState, abilityType: MindAbilityTy
   if (ability.currentCooldown > 0) return state;
   if (ability.active) return state;
 
-  const newState = { ...state };
-  newState.colonyMind = { ...state.colonyMind, abilities: state.colonyMind.abilities.map(a => ({ ...a })) };
-
-  const newAbility = newState.colonyMind.abilities.find(a => a.type === abilityType)!;
-  newAbility.active = true;
-  newAbility.remainingDuration = newAbility.duration;
-  newState.colonyMind.consciousness -= newAbility.cost;
+  // Mutate in place
+  ability.active = true;
+  ability.remainingDuration = ability.duration;
+  state.colonyMind.consciousness -= ability.cost;
 
   // Apply immediate effects
   switch (abilityType) {
     case MindAbilityType.TotalAlarm: {
       // All soldiers head to entrances
-      for (const ant of newState.ants) {
+      for (const ant of state.ants) {
         if (ant.caste === AntCaste.Soldier && ant.state !== AntState.Dead) {
-          const entrance = findEntrance(newState);
+          const entrance = findEntrance(state);
           if (entrance) {
             ant.targetX = entrance.x;
             ant.targetY = entrance.y;
@@ -2955,11 +3810,11 @@ export function activateMindAbility(state: GameState, abilityType: MindAbilityTy
           }
         }
       }
-      addNotification(newState, 'Total Alarm! All soldiers to the entrances!', 'warning', 5);
+      addNotification(state, 'Total Alarm! All soldiers to the entrances!', 'warning', 5);
       break;
     }
     case MindAbilityType.WorkSurge: {
-      for (const ant of newState.ants) {
+      for (const ant of state.ants) {
         if (ant.caste === AntCaste.Worker && ant.state !== AntState.Dead) {
           ant.speed = ANT_STATS[AntCaste.Worker].speed * 1.5;
         }
@@ -2970,9 +3825,9 @@ export function activateMindAbility(state: GameState, abilityType: MindAbilityTy
       break;
   }
 
-  addNotification(newState, `${MIND_ABILITIES[abilityType].name} activated!`, 'success', 3);
+  addNotification(state, `${MIND_ABILITIES[abilityType].name} activated!`, 'success', 3);
 
-  return newState;
+  return { ...state };
 }
 
 export function setGameSpeed(state: GameState, speed: number): GameState {

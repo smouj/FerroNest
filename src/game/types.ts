@@ -339,7 +339,7 @@ export enum GameTool {
 export interface GameState {
   running: boolean;
   paused: boolean;
-  tick: number;
+  currentTick: number;
   day: number;
   dayProgress: number;
   speed: number;
@@ -390,7 +390,7 @@ export interface GameNotification {
   id: string;
   message: string;
   type: 'info' | 'warning' | 'danger' | 'success';
-  tick: number;
+  currentTick: number;
   priority: number;
 }
 
