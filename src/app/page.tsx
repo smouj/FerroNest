@@ -98,7 +98,7 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
             <div className="flex items-center gap-1.5"><span className="text-red-600">♦</span> Defend the queen</div>
             <div className="flex items-center gap-1.5"><span className="text-pink-600">◎</span> Raise brood</div>
             <div className="flex items-center gap-1.5"><span className="text-emerald-600">⚔</span> Fight enemies</div>
-            <div className="flex items-center gap-1.5"><span className="text-emerald-600">❋</span> Grow fungus</div>
+            <div className="flex items-center gap-1.5"><span className="text-emerald-600">✦</span> Grow fungus</div>
             <div className="flex items-center gap-1.5"><span className="text-amber-600">♥</span> Nurse larvae</div>
             <div className="flex items-center gap-1.5"><span className="text-blue-600">≈</span> Control climate</div>
           </div>

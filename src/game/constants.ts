@@ -138,7 +138,7 @@ export const CHAMBER_INFO: Record<ChamberType, {
     size: 3,
     cost: { compactEarth: 5, biomass: 0 },
     color: '#D4A017',
-    icon: '♛',
+    icon: '▲',
     effect: 'Queen lays eggs here',
   },
   [ChamberType.BroodChamber]: {
@@ -165,7 +165,7 @@ export const CHAMBER_INFO: Record<ChamberType, {
     size: 3,
     cost: { compactEarth: 3, biomass: 3 },
     color: '#7B9E6B',
-    icon: '❋',
+    icon: '✦',
     effect: 'Produces fungus over time',
   },
   [ChamberType.Barracks]: {

@@ -8,7 +8,7 @@ import { useRef, useEffect, useCallback } from 'react';
 import { useGameStore } from '@/game/store';
 import { renderGame, renderMinimap } from '@/game/renderer';
 import { CELL_SIZE, MAP_WIDTH, MAP_HEIGHT, CAMERA_SETTINGS } from '@/game/constants';
-import { GameTool, TerrainType, PheromoneType } from '@/game/types';
+import { GameTool, PheromoneType } from '@/game/types';
 
 export function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -17,7 +17,17 @@ export function GameCanvas() {
   const stateRef = useRef(useGameStore.getState());
   const isDragging = useRef(false);
   const isPainting = useRef(false);
-  const dragStart = useRef({ x: 0, y: 0, camX: 0, camY: 0 });
+  const dragStart = useRef({ x: 0, y: 0, camTargetX: 0, camTargetY: 0 });
+
+  // Smooth camera panning refs - store desired camera position & zoom
+  const cameraTargetRef = useRef({ x: 0, y: 0 });
+  const zoomTargetRef = useRef(1);
+  const smoothInitialized = useRef(false);
+
+  // Track mouse position for zoom-toward-cursor
+  const mouseScreenRef = useRef({ x: 0, y: 0 });
+  // Track which keys are held for continuous smooth panning
+  const keysHeld = useRef<Set<string>>(new Set());
 
   // Keep stateRef updated
   useEffect(() => {
@@ -45,6 +55,13 @@ export function GameCanvas() {
 
       const state = stateRef.current;
 
+      // Initialize smooth camera target from current state on first frame
+      if (!smoothInitialized.current) {
+        cameraTargetRef.current = { x: state.cameraX, y: state.cameraY };
+        zoomTargetRef.current = state.zoom;
+        smoothInitialized.current = true;
+      }
+
       if (state.running && !state.paused) {
         tickAccumulator += delta;
         const maxTicks = state.speed * 3;
@@ -59,7 +76,51 @@ export function GameCanvas() {
         }
       }
 
+      // Continuous smooth panning from held keys
+      const panSpeed = CAMERA_SETTINGS.panSpeed;
+      if (keysHeld.current.has('a') || keysHeld.current.has('ArrowLeft')) {
+        cameraTargetRef.current.x -= panSpeed;
+      }
+      if (keysHeld.current.has('d') || keysHeld.current.has('ArrowRight')) {
+        cameraTargetRef.current.x += panSpeed;
+      }
+      if (keysHeld.current.has('w') || keysHeld.current.has('ArrowUp')) {
+        cameraTargetRef.current.y -= panSpeed;
+      }
+      if (keysHeld.current.has('s') || keysHeld.current.has('ArrowDown')) {
+        cameraTargetRef.current.y += panSpeed;
+      }
+
+      // Smooth camera interpolation
       const currentState = stateRef.current;
+      const smoothFactor = 0.12;
+      const smoothZoomFactor = 0.1;
+
+      const currentCamX = currentState.cameraX;
+      const currentCamY = currentState.cameraY;
+      const currentZoom = currentState.zoom;
+      const targetX = cameraTargetRef.current.x;
+      const targetY = cameraTargetRef.current.y;
+      const targetZoom = zoomTargetRef.current;
+
+      const newCamX = currentCamX + (targetX - currentCamX) * smoothFactor;
+      const newCamY = currentCamY + (targetY - currentCamY) * smoothFactor;
+      const newZoom = currentZoom + (targetZoom - currentZoom) * smoothZoomFactor;
+
+      // Only update store if change is significant (avoid unnecessary renders)
+      const camMoved = Math.abs(newCamX - currentCamX) > 0.05 || Math.abs(newCamY - currentCamY) > 0.05;
+      const zoomChanged = Math.abs(newZoom - currentZoom) > 0.001;
+
+      if (camMoved || zoomChanged) {
+        const store = useGameStore.getState();
+        if (camMoved) {
+          store.setCamera(newCamX, newCamY);
+        }
+        if (zoomChanged) {
+          // Use direct set to avoid clamping in setZoom interfering with smooth interpolation
+          useGameStore.setState({ zoom: Math.max(CAMERA_SETTINGS.minZoom, Math.min(CAMERA_SETTINGS.maxZoom, newZoom)) });
+        }
+      }
 
       // Resize canvas
       const rect = canvas.getBoundingClientRect();
@@ -76,16 +137,17 @@ export function GameCanvas() {
       ctx.scale(dpr, dpr);
 
       // Main game render
-      renderGame(ctx, currentState, rect.width, rect.height);
+      const renderState = stateRef.current;
+      renderGame(ctx, renderState, rect.width, rect.height);
 
       // Minimap
-      if (currentState.showMinimap) {
+      if (renderState.showMinimap) {
         const minimapW = 160;
         const minimapH = 100;
         const minimapX = rect.width - minimapW - 8;
         const minimapY = rect.height - minimapH - 40;
 
-        renderMinimap(ctx, currentState, minimapX, minimapY, minimapW, minimapH);
+        renderMinimap(ctx, renderState, minimapX, minimapY, minimapW, minimapH);
       }
 
       ctx.restore();
@@ -148,10 +210,10 @@ export function GameCanvas() {
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 2 || e.button === 1) {
-      // Right/middle click: pan camera
+      // Right/middle click: pan camera - store camera TARGET for smooth drag
       isDragging.current = true;
-      const state = stateRef.current;
-      dragStart.current = { x: e.clientX, y: e.clientY, camX: state.cameraX, camY: state.cameraY };
+      const target = cameraTargetRef.current;
+      dragStart.current = { x: e.clientX, y: e.clientY, camTargetX: target.x, camTargetY: target.y };
       e.preventDefault();
     } else if (e.button === 0) {
       // Left click: tool action
@@ -164,12 +226,19 @@ export function GameCanvas() {
   }, [screenToGame, handleToolAction]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
+      mouseScreenRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
     if (isDragging.current) {
-      const state = stateRef.current;
-      const zoom = state.zoom;
+      const zoom = stateRef.current.zoom;
       const dx = (e.clientX - dragStart.current.x) / zoom;
       const dy = (e.clientY - dragStart.current.y) / zoom;
-      useGameStore.getState().setCamera(dragStart.current.camX - dx, dragStart.current.camY - dy);
+      // Update the camera TARGET for smooth panning
+      cameraTargetRef.current.x = dragStart.current.camTargetX - dx;
+      cameraTargetRef.current.y = dragStart.current.camTargetY - dy;
     } else if (isPainting.current) {
       // Drag-painting for pheromones and excavation
       const coords = screenToGame(e);
@@ -196,11 +265,29 @@ export function GameCanvas() {
     isPainting.current = false;
   }, []);
 
-  // Scroll wheel for zoom
+  // Scroll wheel for zoom - zoom toward mouse cursor
   const handleWheel = useCallback((e: React.WheelEvent) => {
     const state = stateRef.current;
-    const newZoom = state.zoom + (e.deltaY > 0 ? -0.08 : 0.08);
-    useGameStore.getState().setZoom(newZoom);
+    const currentZoom = state.zoom;
+    const zoomDelta = e.deltaY > 0 ? -0.08 : 0.08;
+    const newZoom = Math.max(CAMERA_SETTINGS.minZoom, Math.min(CAMERA_SETTINGS.maxZoom, currentZoom + zoomDelta));
+
+    if (Math.abs(newZoom - currentZoom) < 0.001) return;
+
+    // Zoom toward mouse cursor position
+    // World position under the mouse: worldX = cameraX + mouseX / currentZoom
+    // After zoom, we want the same world point under the mouse: worldX = newCamX + mouseX / newZoom
+    // So: newCamX = worldX - mouseX / newZoom = cameraX + mouseX / currentZoom - mouseX / newZoom
+    const mx = mouseScreenRef.current.x;
+    const my = mouseScreenRef.current.y;
+
+    const worldX = cameraTargetRef.current.x + mx / currentZoom;
+    const worldY = cameraTargetRef.current.y + my / currentZoom;
+
+    cameraTargetRef.current.x = worldX - mx / newZoom;
+    cameraTargetRef.current.y = worldY - my / newZoom;
+    zoomTargetRef.current = newZoom;
+
     e.preventDefault();
   }, []);
 
@@ -214,26 +301,31 @@ export function GameCanvas() {
       switch (e.key) {
         case 'ArrowLeft':
         case 'a':
-          store.setCamera(state.cameraX - panSpeed, state.cameraY);
+          // Update camera target for smooth panning
+          cameraTargetRef.current.x -= panSpeed;
+          keysHeld.current.add(e.key);
           break;
         case 'ArrowRight':
         case 'd':
-          store.setCamera(state.cameraX + panSpeed, state.cameraY);
+          cameraTargetRef.current.x += panSpeed;
+          keysHeld.current.add(e.key);
           break;
         case 'ArrowUp':
         case 'w':
-          store.setCamera(state.cameraX, state.cameraY - panSpeed);
+          cameraTargetRef.current.y -= panSpeed;
+          keysHeld.current.add(e.key);
           break;
         case 'ArrowDown':
         case 's':
-          store.setCamera(state.cameraX, state.cameraY + panSpeed);
+          cameraTargetRef.current.y += panSpeed;
+          keysHeld.current.add(e.key);
           break;
         case '+':
         case '=':
-          store.setZoom(state.zoom + 0.1);
+          zoomTargetRef.current = Math.min(CAMERA_SETTINGS.maxZoom, zoomTargetRef.current + 0.1);
           break;
         case '-':
-          store.setZoom(state.zoom - 0.1);
+          zoomTargetRef.current = Math.max(CAMERA_SETTINGS.minZoom, zoomTargetRef.current - 0.1);
           break;
         case ' ':
           e.preventDefault();
@@ -257,8 +349,16 @@ export function GameCanvas() {
       }
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      keysHeld.current.delete(e.key);
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
   }, []);
 
   return (

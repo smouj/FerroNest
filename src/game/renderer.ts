@@ -87,6 +87,10 @@ function updateAndRenderParticles(ctx: CanvasRenderingContext2D) {
         p.vy -= 0.008;
         p.vx += Math.sin(p.life * 0.05) * 0.01;
         break;
+      case 'bubble':
+        p.vy -= 0.015 + Math.random() * 0.005;
+        p.vx += Math.sin(p.life * 0.15) * 0.02;
+        break;
     }
 
     p.life--;
@@ -97,12 +101,29 @@ function updateAndRenderParticles(ctx: CanvasRenderingContext2D) {
     }
 
     const alpha = p.life / p.maxLife;
-    ctx.globalAlpha = alpha * (p.type === 'glow' ? 0.4 : p.type === 'pheromone' ? 0.3 : 0.6);
+    ctx.globalAlpha = alpha * (p.type === 'glow' ? 0.4 : p.type === 'pheromone' ? 0.3 : p.type === 'bubble' ? 0.35 : 0.6);
 
     if (p.type === 'glow' || p.type === 'pheromone') {
-      ctx.fillStyle = p.color;
+      // Radial gradient for glow/pheromone particles
+      const radius = p.size * (1 + (1 - alpha) * 0.5);
+      const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
+      grad.addColorStop(0, p.color);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size * (1 + (1 - alpha) * 0.5), 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (p.type === 'bubble') {
+      // Bubble: hollow circle with highlight
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * (0.8 + (1 - alpha) * 0.4), 0, Math.PI * 2);
+      ctx.stroke();
+      // Small highlight
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.beginPath();
+      ctx.arc(p.x - p.size * 0.2, p.y - p.size * 0.2, p.size * 0.25, 0, Math.PI * 2);
       ctx.fill();
     } else {
       ctx.fillStyle = p.color;
@@ -237,12 +258,25 @@ function renderTerrain(
         case TerrainType.Stone:
           color = lerpColor('#3a3a3a', '#5a5a5a', (Math.sin(x * 3 + y * 5) * 0.5 + 0.5) * 0.2);
           break;
-        case TerrainType.Tunnel:
-          color = '#1a1410';
+        case TerrainType.Tunnel: {
+          // Subtle floor texture with faint dirt particles
+          const tunnelNoise = (Math.sin(x * 23.17 + y * 57.31) * 43758.5453) % 1;
+          color = lerpColor('#1a1410', '#1e1814', Math.abs(tunnelNoise) * 0.4);
           break;
-        case TerrainType.Chamber:
-          color = '#1a1410';
+        }
+        case TerrainType.Chamber: {
+          // Chamber floor tint based on chamber type
+          let chamberBase = '#1a1410';
+          if (cell.chamberType === ChamberType.FungusChamber) chamberBase = '#161a14';
+          else if (cell.chamberType === ChamberType.Barracks) chamberBase = '#1a1210';
+          else if (cell.chamberType === ChamberType.FoodStorage) chamberBase = '#1a1610';
+          else if (cell.chamberType === ChamberType.WasteChamber) chamberBase = '#1a1a12';
+          else if (cell.chamberType === ChamberType.HumidityChamber) chamberBase = '#141618';
+          else if (cell.chamberType === ChamberType.NurseryChamber) chamberBase = '#1a1418';
+          const chNoise = (Math.sin(x * 19.43 + y * 43.71) * 43758.5453) % 1;
+          color = lerpColor(chamberBase, '#1e1814', Math.abs(chNoise) * 0.3);
           break;
+        }
         case TerrainType.Water:
           color = '#0d47a1';
           break;
@@ -296,13 +330,30 @@ function renderTerrain(
         }
       }
 
-      // Tunnel/chamber wall effects
+      // Tunnel/chamber floor texture (scattered dirt particles)
+      if (terrain === TerrainType.Tunnel || terrain === TerrainType.Chamber) {
+        const floorNoise = (Math.sin(x * 31.7 + y * 47.3) * 43758.5453) % 1;
+        if (floorNoise > 0.6) {
+          ctx.fillStyle = `rgba(140,110,70,${0.04 + Math.abs(floorNoise) * 0.03})`;
+          const dotX = px + (floorNoise * 8 % CELL_SIZE);
+          const dotY = py + ((floorNoise * 13) % CELL_SIZE);
+          ctx.fillRect(dotX, dotY, 1, 1);
+        }
+        if (floorNoise < -0.5) {
+          ctx.fillStyle = `rgba(60,40,20,0.06)`;
+          const dotX = px + ((floorNoise * -7) % CELL_SIZE);
+          const dotY = py + ((floorNoise * -11) % CELL_SIZE);
+          ctx.fillRect(dotX, dotY, 1.5, 1);
+        }
+      }
+
+      // Tunnel/chamber wall effects (enhanced ambient occlusion)
       if (terrain === TerrainType.Tunnel || terrain === TerrainType.Chamber) {
         renderWallEffects(ctx, state, cell, px, py);
 
         // Tunnel quality visual
         if (cell.tunnelQuality < 0.5 && terrain === TerrainType.Tunnel) {
-          ctx.fillStyle = `rgba(80,60,40,${(1 - cell.tunnelQuality) * 0.1})`;
+          ctx.fillStyle = `rgba(80,60,40,${(1 - cell.tunnelQuality) * 0.12})`;
           ctx.fillRect(px, py, CELL_SIZE, CELL_SIZE);
         }
 
@@ -395,28 +446,39 @@ function renderWallEffects(
     t && t !== TerrainType.Tunnel && t !== TerrainType.Chamber &&
     t !== TerrainType.Sky && t !== TerrainType.SurfaceGrass && t !== TerrainType.Sand;
 
-  // Wall shadows and highlights
+  // Wall shadows and highlights (enhanced ambient occlusion)
   if (isWall(above?.terrain)) {
-    const grad = ctx.createLinearGradient(px, py, px, py + 3);
-    grad.addColorStop(0, 'rgba(0,0,0,0.25)');
+    const grad = ctx.createLinearGradient(px, py, px, py + 4);
+    grad.addColorStop(0, 'rgba(0,0,0,0.38)');
+    grad.addColorStop(0.5, 'rgba(0,0,0,0.15)');
     grad.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = grad;
-    ctx.fillRect(px, py, CELL_SIZE, 3);
+    ctx.fillRect(px, py, CELL_SIZE, 4);
   }
   if (isWall(below?.terrain)) {
-    ctx.fillStyle = 'rgba(80,60,40,0.08)';
-    ctx.fillRect(px, py + CELL_SIZE - 1.5, CELL_SIZE, 1.5);
+    ctx.fillStyle = 'rgba(80,60,40,0.12)';
+    ctx.fillRect(px, py + CELL_SIZE - 2, CELL_SIZE, 2);
   }
   if (isWall(left?.terrain)) {
-    const grad = ctx.createLinearGradient(px, py, px + 2, py);
-    grad.addColorStop(0, 'rgba(0,0,0,0.2)');
+    const grad = ctx.createLinearGradient(px, py, px + 3, py);
+    grad.addColorStop(0, 'rgba(0,0,0,0.32)');
+    grad.addColorStop(0.5, 'rgba(0,0,0,0.12)');
     grad.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = grad;
-    ctx.fillRect(px, py, 2, CELL_SIZE);
+    ctx.fillRect(px, py, 3, CELL_SIZE);
   }
   if (isWall(right?.terrain)) {
-    ctx.fillStyle = 'rgba(80,60,40,0.06)';
-    ctx.fillRect(px + CELL_SIZE - 1.5, py, 1.5, CELL_SIZE);
+    ctx.fillStyle = 'rgba(80,60,40,0.1)';
+    ctx.fillRect(px + CELL_SIZE - 2, py, 2, CELL_SIZE);
+  }
+  // Corner darkening for extra AO
+  if (isWall(above?.terrain) && isWall(left?.terrain)) {
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillRect(px, py, 3, 3);
+  }
+  if (isWall(above?.terrain) && isWall(right?.terrain)) {
+    ctx.fillStyle = 'rgba(0,0,0,0.12)';
+    ctx.fillRect(px + CELL_SIZE - 3, py, 3, 3);
   }
 }
 
@@ -434,9 +496,7 @@ function renderSurfaceLine(
   ctx.fillStyle = '#3a6b30';
   ctx.fillRect(startCol * CELL_SIZE, surfaceY - 1, (endCol - startCol) * CELL_SIZE, 2);
 
-  // Animated grass blades
-  ctx.strokeStyle = '#3a6b30';
-  ctx.lineWidth = 1;
+  // Animated grass blades (more varied: thick clusters, dead/yellow grass)
   for (let x = startCol; x < endCol; x++) {
     const hash = Math.sin(x * 7.77 + 3.33);
     if (hash > 0.15) {
@@ -444,50 +504,124 @@ function renderSurfaceLine(
       const gy = surfaceY;
       const sway = Math.sin(state.tick * 0.02 + x * 0.5) * 1.5;
 
+      // Determine grass color: mostly green, some yellow/dead
+      const grassHash = Math.sin(x * 3.33 + 1.11);
+      const isYellowGrass = grassHash > 0.85;
+      ctx.strokeStyle = isYellowGrass ? '#8B7D3C' : '#3a6b30';
+      ctx.lineWidth = 1;
+
       ctx.beginPath();
       ctx.moveTo(gx, gy);
       ctx.quadraticCurveTo(gx + sway, gy - 5, gx + sway + Math.sin(x) * 2, gy - 8);
       ctx.stroke();
 
-      // Thicker grass for some
-      if (hash > 0.6) {
+      // Thicker grass clusters for some
+      if (hash > 0.5) {
         ctx.beginPath();
         ctx.moveTo(gx + 2, gy);
         ctx.quadraticCurveTo(gx + 2 - sway * 0.5, gy - 4, gx + 2 - sway * 0.3, gy - 6);
         ctx.stroke();
       }
+      if (hash > 0.75) {
+        // Extra thick cluster: third blade
+        ctx.strokeStyle = isYellowGrass ? '#9B8D4C' : '#4a7b40';
+        ctx.beginPath();
+        ctx.moveTo(gx - 1, gy);
+        ctx.quadraticCurveTo(gx - 1 + sway * 0.3, gy - 3, gx - 1 + sway * 0.2, gy - 7);
+        ctx.stroke();
+      }
     }
   }
 
-  // Surface flowers/plants
-  for (let x = startCol; x < endCol; x += 5) {
-    const hash = Math.sin(x * 13.37 + 7.77);
-    if (hash > 0.8) {
-      const fx = x * CELL_SIZE + CELL_SIZE / 2;
-      const fy = surfaceY - 2;
-      // Small plant
-      ctx.fillStyle = hash > 0.9 ? '#FFD700' : '#FF6347';
+  // Small rocks/pebbles on surface
+  for (let x = startCol; x < endCol; x += 3) {
+    const rockHash = Math.sin(x * 19.43 + 5.17);
+    if (rockHash > 0.82) {
+      const rx = x * CELL_SIZE + (rockHash * 6 + 3);
+      const ry = surfaceY - 1;
+      ctx.fillStyle = `rgba(120,100,80,${0.3 + rockHash * 0.2})`;
       ctx.beginPath();
-      ctx.arc(fx, fy - 3, 1.5, 0, Math.PI * 2);
+      ctx.ellipse(rx, ry, 1.5 + rockHash, 1, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Rock highlight
+      ctx.fillStyle = 'rgba(200,180,150,0.15)';
+      ctx.beginPath();
+      ctx.ellipse(rx - 0.5, ry - 0.3, 0.8, 0.5, 0, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  // Underground roots
+  // Surface flowers/plants - multi-petal rendering
+  for (let x = startCol; x < endCol; x += 4) {
+    const hash = Math.sin(x * 13.37 + 7.77);
+    if (hash > 0.75) {
+      const fx = x * CELL_SIZE + CELL_SIZE / 2;
+      const fy = surfaceY - 3;
+      // Stem
+      ctx.strokeStyle = '#3a6b30';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(fx, surfaceY);
+      ctx.lineTo(fx, fy + 1);
+      ctx.stroke();
+      // Multi-petal flower
+      const petalCount = hash > 0.9 ? 5 : 4;
+      const flowerColor = hash > 0.9 ? '#FFD700' : hash > 0.82 ? '#FF6347' : '#FF69B4';
+      ctx.fillStyle = flowerColor;
+      for (let p = 0; p < petalCount; p++) {
+        const angle = (p / petalCount) * Math.PI * 2;
+        const petalX = fx + Math.cos(angle) * 2;
+        const petalY = fy + Math.sin(angle) * 2;
+        ctx.beginPath();
+        ctx.ellipse(petalX, petalY, 1.2, 0.7, angle, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Flower center
+      ctx.fillStyle = hash > 0.85 ? '#FFF8DC' : '#FFE4B5';
+      ctx.beginPath();
+      ctx.arc(fx, fy, 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Underground roots (more naturally branching)
   ctx.strokeStyle = 'rgba(62, 39, 35, 0.35)';
   ctx.lineWidth = 1.5;
-  for (let x = startCol; x < endCol; x += 6) {
+  for (let x = startCol; x < endCol; x += 5) {
     const rootY = (SURFACE_ROW + 2) * CELL_SIZE;
     const hash = Math.sin(x * 3.14 + 1.57);
     if (hash > 0.1) {
+      const baseX = x * CELL_SIZE;
+      // Main root
+      const endX = baseX + hash * 20;
+      const endY = rootY + 40 + hash * 8;
       ctx.beginPath();
-      ctx.moveTo(x * CELL_SIZE, rootY);
+      ctx.moveTo(baseX, rootY);
       ctx.bezierCurveTo(
-        x * CELL_SIZE + 10, rootY + 15 + hash * 10,
-        x * CELL_SIZE - 5, rootY + 30 + hash * 5,
-        x * CELL_SIZE + hash * 20, rootY + 40 + hash * 8
+        baseX + 10, rootY + 15 + hash * 10,
+        baseX - 5, rootY + 30 + hash * 5,
+        endX, endY
       );
       ctx.stroke();
+      // Branch root 1
+      if (hash > 0.3) {
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(62, 39, 35, 0.25)';
+        const branchStart = rootY + 20 + hash * 5;
+        ctx.beginPath();
+        ctx.moveTo(baseX + 5, branchStart);
+        ctx.quadraticCurveTo(baseX - 8, branchStart + 10, baseX - 10, branchStart + 18);
+        ctx.stroke();
+        // Branch root 2
+        if (hash > 0.6) {
+          ctx.beginPath();
+          ctx.moveTo(baseX + 12, branchStart - 5);
+          ctx.quadraticCurveTo(baseX + 18, branchStart + 5, baseX + 22, branchStart + 15);
+          ctx.stroke();
+        }
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(62, 39, 35, 0.35)';
+      }
     }
   }
 }
@@ -575,9 +709,14 @@ function renderPheromones(ctx: CanvasRenderingContext2D, state: GameState) {
 
   // Pheromone view: darken non-pheromone areas (only visible portion)
   if (state.showPheromoneView) {
+    // Use camera viewport to limit iteration
+    const startCol = Math.max(0, Math.floor(state.cameraX / CELL_SIZE) - 1);
+    const endCol = Math.min(MAP_WIDTH, Math.ceil((state.cameraX + 2000 / state.zoom) / CELL_SIZE) + 1);
+    const startRow = Math.max(0, Math.floor(state.cameraY / CELL_SIZE) - 1);
+    const endRow = Math.min(MAP_HEIGHT, Math.ceil((state.cameraY + 1200 / state.zoom) / CELL_SIZE) + 1);
     ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-    for (let y = 0; y < MAP_HEIGHT; y++) {
-      for (let x = 0; x < MAP_WIDTH; x++) {
+    for (let y = startRow; y < endRow; y++) {
+      for (let x = startCol; x < endCol; x++) {
         if (!state.pheromoneMap.has(`${x},${y}`)) {
           ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
         }
@@ -596,24 +735,54 @@ function renderResourceDeposits(ctx: CanvasRenderingContext2D, state: GameState)
     const color = RESOURCE_COLORS[deposit.type] || '#8B6914';
     const fillRatio = deposit.amount / deposit.maxAmount;
     const size = 3 + fillRatio * 5;
+    const cx = px + CELL_SIZE / 2;
+    const cy = py + CELL_SIZE / 2;
 
     // Pulsing glow
     const glowPulse = 1 + Math.sin(state.tick * 0.03 + deposit.x) * 0.2;
     ctx.fillStyle = color + '18';
     ctx.beginPath();
-    ctx.arc(px + CELL_SIZE / 2, py + CELL_SIZE / 2, (size + 5) * glowPulse, 0, Math.PI * 2);
+    ctx.arc(cx, cy, (size + 5) * glowPulse, 0, Math.PI * 2);
     ctx.fill();
 
-    // Main deposit
+    // Main deposit shape varies by type
     ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(px + CELL_SIZE / 2, py + CELL_SIZE / 2, size, 0, Math.PI * 2);
-    ctx.fill();
+    if (deposit.type === 'sugar') {
+      // Diamond shape for sugar
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - size);
+      ctx.lineTo(cx + size * 0.7, cy);
+      ctx.lineTo(cx, cy + size);
+      ctx.lineTo(cx - size * 0.7, cy);
+      ctx.closePath();
+      ctx.fill();
+    } else if (deposit.type === 'water') {
+      // Hexagon shape for water
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const angle = (i / 6) * Math.PI * 2 - Math.PI / 6;
+        const hx = cx + Math.cos(angle) * size * 0.8;
+        const hy = cy + Math.sin(angle) * size * 0.8;
+        if (i === 0) ctx.moveTo(hx, hy);
+        else ctx.lineTo(hx, hy);
+      }
+      ctx.closePath();
+      ctx.fill();
+    } else if (deposit.type === 'compact_earth') {
+      // Square shape for earth
+      const half = size * 0.7;
+      ctx.fillRect(cx - half, cy - half, half * 2, half * 2);
+    } else {
+      // Circle for food, protein, nectar, leaf_fragments, etc.
+      ctx.beginPath();
+      ctx.arc(cx, cy, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     // Highlight
     ctx.fillStyle = 'rgba(255,255,255,0.2)';
     ctx.beginPath();
-    ctx.arc(px + CELL_SIZE / 2 - size * 0.2, py + CELL_SIZE / 2 - size * 0.2, size * 0.3, 0, Math.PI * 2);
+    ctx.arc(cx - size * 0.2, cy - size * 0.2, size * 0.3, 0, Math.PI * 2);
     ctx.fill();
 
     // Label
@@ -622,7 +791,17 @@ function renderResourceDeposits(ctx: CanvasRenderingContext2D, state: GameState)
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const labels: Record<string, string> = { food: 'F', protein: 'P', sugar: 'S', water: 'W', nectar: 'N', leaf_fragments: 'L' };
-    ctx.fillText(labels[deposit.type] || '?', px + CELL_SIZE / 2, py + CELL_SIZE / 2);
+    ctx.fillText(labels[deposit.type] || '?', cx, cy);
+
+    // Amount indicator fill bar below deposit
+    const barW = 10;
+    const barH = 1.5;
+    const barX = cx - barW / 2;
+    const barY = cy + size + 3;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(barX - 0.5, barY - 0.5, barW + 1, barH + 1);
+    ctx.fillStyle = fillRatio > 0.5 ? color : fillRatio > 0.25 ? '#FF9800' : '#F44336';
+    ctx.fillRect(barX, barY, barW * fillRatio, barH);
   }
 }
 
@@ -795,10 +974,23 @@ function renderAnts(ctx: CanvasRenderingContext2D, state: GameState) {
       ctx.arc(px + CELL_SIZE / 2, py + CELL_SIZE / 2, 14, 0, Math.PI * 2);
       ctx.fill();
 
+      // Draw crown symbol (not emoji)
+      const crownX = px + CELL_SIZE / 2;
+      const crownY = py - 4;
       ctx.fillStyle = '#FFD700';
-      ctx.font = '8px serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('♛', px + CELL_SIZE / 2, py - 2);
+      ctx.strokeStyle = '#B8860B';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(crownX - 4, crownY + 2);
+      ctx.lineTo(crownX - 4, crownY - 1);
+      ctx.lineTo(crownX - 2, crownY);
+      ctx.lineTo(crownX, crownY - 3);
+      ctx.lineTo(crownX + 2, crownY);
+      ctx.lineTo(crownX + 4, crownY - 1);
+      ctx.lineTo(crownX + 4, crownY + 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
     }
 
     // Fighting effect
@@ -1071,8 +1263,13 @@ function renderFogOfWar(
 
 // --- Water Overlay ---
 function renderWater(ctx: CanvasRenderingContext2D, state: GameState) {
-  for (let y = 0; y < MAP_HEIGHT; y++) {
-    for (let x = 0; x < MAP_WIDTH; x++) {
+  const startCol = Math.max(0, Math.floor(state.cameraX / CELL_SIZE) - 1);
+  const endCol = Math.min(MAP_WIDTH, Math.ceil((state.cameraX + 2000 / state.zoom) / CELL_SIZE) + 1);
+  const startRow = Math.max(0, Math.floor(state.cameraY / CELL_SIZE) - 1);
+  const endRow = Math.min(MAP_HEIGHT, Math.ceil((state.cameraY + 1200 / state.zoom) / CELL_SIZE) + 1);
+
+  for (let y = startRow; y < endRow; y++) {
+    for (let x = startCol; x < endCol; x++) {
       const cell = state.map[y]?.[x];
       if (!cell || cell.waterLevel <= 0) continue;
 
@@ -1284,6 +1481,27 @@ function spawnAmbientParticles(state: GameState) {
       }
     }
   }
+
+  // Water area bubbles
+  if (Math.random() < 0.04) {
+    for (let y = 0; y < MAP_HEIGHT; y += 4) {
+      for (let x = 0; x < MAP_WIDTH; x += 4) {
+        const cell = state.map[y]?.[x];
+        if (cell && (cell.terrain === TerrainType.Water || cell.waterLevel > 0.4)) {
+          addParticle(
+            cell.x * CELL_SIZE + Math.random() * CELL_SIZE,
+            cell.y * CELL_SIZE + Math.random() * CELL_SIZE,
+            (Math.random() - 0.5) * 0.15,
+            -Math.random() * 0.08 - 0.02,
+            60 + Math.random() * 40,
+            'rgba(100, 180, 255, 0.5)',
+            1.5,
+            'bubble'
+          );
+        }
+      }
+    }
+  }
 }
 
 // --- Minimap ---
@@ -1297,13 +1515,10 @@ export function renderMinimap(
   const scaleY = height / MAP_HEIGHT;
 
   // Background
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
   ctx.fillRect(x, y, width, height);
-  ctx.strokeStyle = 'rgba(160, 120, 60, 0.4)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(x, y, width, height);
 
-  // Terrain
+  // Terrain with clearer distinct colors
   for (let my = 0; my < MAP_HEIGHT; my += 2) {
     for (let mx = 0; mx < MAP_WIDTH; mx += 2) {
       const cell = state.map[my]?.[mx];
@@ -1311,16 +1526,19 @@ export function renderMinimap(
 
       let color: string;
       switch (cell.terrain) {
-        case TerrainType.Sky: color = '#1a1a2e'; break;
-        case TerrainType.SurfaceGrass: color = '#2d5a27'; break;
-        case TerrainType.SurfaceDirt: color = '#5c4033'; break;
-        case TerrainType.Tunnel: color = '#2a2018'; break;
+        case TerrainType.Sky: color = '#0d1a2e'; break;
+        case TerrainType.SurfaceGrass: color = '#3d7a32'; break;
+        case TerrainType.SurfaceDirt: color = '#7a5a3d'; break;
+        case TerrainType.Tunnel: color = '#3a2e22'; break;
         case TerrainType.Chamber:
-          color = cell.chamberType ? CHAMBER_INFO[cell.chamberType].color + '80' : '#2a2018';
+          color = cell.chamberType ? CHAMBER_INFO[cell.chamberType].color + 'B0' : '#3a2e22';
           break;
-        case TerrainType.Water: color = '#1565C0'; break;
-        case TerrainType.Stone: color = '#4a4a4a'; break;
-        default: color = '#3e2723'; break;
+        case TerrainType.Water: color = '#2980D0'; break;
+        case TerrainType.Stone: color = '#5a5a5a'; break;
+        case TerrainType.Clay: color = '#B0704A'; break;
+        case TerrainType.Sand: color = '#C8B878'; break;
+        case TerrainType.Roots: color = '#5A3A28'; break;
+        default: color = '#4a3020'; break;
       }
 
       ctx.fillStyle = color;
@@ -1332,6 +1550,37 @@ export function renderMinimap(
       );
     }
   }
+
+  // Chamber highlights as brighter colored dots
+  const chamberCenters = new Map<string, { sx: number; sy: number; count: number; color: string }>();
+  for (let my = 0; my < MAP_HEIGHT; my += 2) {
+    for (let mx = 0; mx < MAP_WIDTH; mx += 2) {
+      const cell = state.map[my]?.[mx];
+      if (!cell || !cell.explored || cell.terrain !== TerrainType.Chamber || !cell.chamberType) continue;
+      const key = cell.chamberType;
+      const existing = chamberCenters.get(key);
+      if (existing) {
+        existing.sx += mx;
+        existing.sy += my;
+        existing.count++;
+      } else {
+        chamberCenters.set(key, { sx: mx, sy: my, count: 1, color: CHAMBER_INFO[cell.chamberType].color });
+      }
+    }
+  }
+  chamberCenters.forEach((ch) => {
+    const avgX = ch.sx / ch.count;
+    const avgY = ch.sy / ch.count;
+    ctx.fillStyle = ch.color;
+    ctx.beginPath();
+    ctx.arc(x + avgX * scaleX, y + avgY * scaleY, 3, 0, Math.PI * 2);
+    ctx.fill();
+    // Brighter glow around chamber dot
+    ctx.fillStyle = ch.color + '40';
+    ctx.beginPath();
+    ctx.arc(x + avgX * scaleX, y + avgY * scaleY, 5, 0, Math.PI * 2);
+    ctx.fill();
+  });
 
   // Ants as bright dots
   for (const ant of state.ants) {
@@ -1361,9 +1610,21 @@ export function renderMinimap(
   ctx.lineWidth = 0.5;
   const viewX = x + (state.cameraX / CELL_SIZE) * scaleX;
   const viewY = y + (state.cameraY / CELL_SIZE) * scaleY;
-  const viewW = (800 / state.zoom / CELL_SIZE) * scaleX; // Approximate
+  const viewW = (800 / state.zoom / CELL_SIZE) * scaleX;
   const viewH = (600 / state.zoom / CELL_SIZE) * scaleY;
   ctx.strokeRect(viewX, viewY, viewW, viewH);
+
+  // Border and "MAP" label
+  ctx.strokeStyle = 'rgba(160, 130, 70, 0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x - 0.5, y - 0.5, width + 1, height + 1);
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(x, y - 11, 28, 11);
+  ctx.fillStyle = 'rgba(160, 130, 70, 0.8)';
+  ctx.font = 'bold 8px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('MAP', x + 3, y - 1);
 }
 
 // --- Utility ---

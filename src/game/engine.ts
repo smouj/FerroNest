@@ -652,8 +652,7 @@ function updateFogOfWar(state: GameState) {
     const ay = Math.round(ant.y);
 
     for (let dy = -visionRange; dy <= visionRange; dy++) {
-      for (let dx = -visionRange; dx <= dx; dx++) {
-        // Corrected: use dy range properly
+      for (let dx = -visionRange; dx <= visionRange; dx++) {
         const nx = ax + dx;
         const ny = ay + dy;
         if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT) {
@@ -666,31 +665,50 @@ function updateFogOfWar(state: GameState) {
     }
   }
 
-  // Update light levels based on time of day and depth
-  for (let y = 0; y < MAP_HEIGHT; y++) {
-    for (let x = 0; x < MAP_WIDTH; x++) {
-      const cell = state.map[y][x];
-      const depth = y - SURFACE_ROW;
+  // Update light levels - only for explored cells near ants (not entire grid)
+  const litCells = new Set<string>();
 
-      if (depth < 0) {
-        // Surface: affected by time of day
-        cell.lightLevel = 0.3 + state.ambientLight * 0.7;
-      } else if (cell.terrain === TerrainType.Tunnel || cell.terrain === TerrainType.Chamber) {
-        // Underground: light from chambers, ants carrying things
-        let light = FOG_SETTINGS.tunnelLight;
-        if (cell.chamberType) light = FOG_SETTINGS.chamberLight;
-        // Ants nearby provide some light
-        for (const ant of state.ants) {
-          if (ant.state === AntState.Dead) continue;
-          const dist = Math.sqrt((ant.x - x) ** 2 + (ant.y - y) ** 2);
-          if (dist < 4) {
-            light += 0.15 * (1 - dist / 4);
+  // Surface cells: update based on time of day (only a narrow band)
+  const surfaceLight = 0.3 + state.ambientLight * 0.7;
+  for (let x = 0; x < MAP_WIDTH; x++) {
+    for (let y = 0; y < SURFACE_ROW; y++) {
+      state.map[y][x].lightLevel = surfaceLight;
+    }
+  }
+
+  // Underground: only update explored tunnel/chamber cells near ants
+  for (const ant of state.ants) {
+    if (ant.state === AntState.Dead) continue;
+    const ax = Math.round(ant.x);
+    const ay = Math.round(ant.y);
+    const lightRange = 6;
+    for (let dy = -lightRange; dy <= lightRange; dy++) {
+      for (let dx = -lightRange; dx <= lightRange; dx++) {
+        const nx = ax + dx;
+        const ny = ay + dy;
+        if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT && ny >= SURFACE_ROW) {
+          const key = `${nx},${ny}`;
+          if (litCells.has(key)) continue;
+          litCells.add(key);
+
+          const cell = state.map[ny][nx];
+          if (cell.terrain === TerrainType.Tunnel || cell.terrain === TerrainType.Chamber) {
+            let light = FOG_SETTINGS.tunnelLight;
+            if (cell.chamberType) light = FOG_SETTINGS.chamberLight;
+            // Ants nearby provide some light
+            for (const otherAnt of state.ants) {
+              if (otherAnt.state === AntState.Dead) continue;
+              const dist = Math.sqrt((otherAnt.x - nx) ** 2 + (otherAnt.y - ny) ** 2);
+              if (dist < 4) {
+                light += 0.15 * (1 - dist / 4);
+              }
+            }
+            cell.lightLevel = Math.min(1, light);
+          } else {
+            const depth = ny - SURFACE_ROW;
+            cell.lightLevel = Math.max(0, 0.1 - depth * 0.003);
           }
         }
-        cell.lightLevel = Math.min(1, light);
-      } else {
-        // Solid terrain: very dark
-        cell.lightLevel = Math.max(0, 0.1 - depth * 0.003);
       }
     }
   }
@@ -779,7 +797,7 @@ function consumeResources(state: GameState) {
     totalFoodConsumption += stats.foodConsumption;
     totalProteinConsumption += stats.proteinConsumption;
 
-    ant.hunger = Math.min(1, ant.hunger + stats.foodConsumption * 0.0008);
+    ant.hunger = Math.min(1, ant.hunger + stats.foodConsumption * 0.0005);
 
     // Fatigue increases from work
     if (ant.state !== AntState.Idle && ant.state !== AntState.Resting && ant.state !== AntState.Dead) {
@@ -917,9 +935,15 @@ function queenLayEggs(state: GameState) {
   const queen = state.ants.find(a => a.caste === AntCaste.Queen && a.state !== AntState.Dead);
   if (!queen) return;
 
-  if (state.tick % 80 !== 0) return;
+  // Dynamic egg laying rate based on food supply
+  const foodSupplyFactor = Math.min(1, state.resources.food / 30); // 0-1, higher with more food
+  const eggInterval = Math.floor(80 / (0.4 + foodSupplyFactor * 0.6)); // Faster when more food (40-80 ticks)
+  if (state.tick % eggInterval !== 0) return;
   if (state.resources.food < 4) return;
-  if (state.brood.length > 20) return; // Don't overproduce
+  // Dynamic brood cap scaling with colony size
+  const livingAnts = state.ants.filter(a => a.state !== AntState.Dead).length;
+  const maxBrood = 20 + Math.floor(livingAnts * 0.5);
+  if (state.brood.length > maxBrood) return;
 
   // Find brood chamber (or queen chamber as fallback)
   let broodX = queen.x;
@@ -962,8 +986,11 @@ function queenLayEggs(state: GameState) {
   const builderRatio = (casteCounts[AntCaste.Builder] || 0) / total;
   const cultivatorRatio = (casteCounts[AntCaste.Cultivator] || 0) / total;
 
-  // If enemies present, need more soldiers
-  if (state.enemies.length > 0 && soldierRatio < 0.15 && state.resources.protein >= 5) {
+  // Smart caste selection: respond to threats with more soldiers
+  const enemyThreatLevel = state.enemies.length; // more enemies = more threat
+  const soldierCap = Math.min(0.3, 0.1 + enemyThreatLevel * 0.02); // Up to 30% soldiers under heavy threat
+
+  if (enemyThreatLevel > 0 && soldierRatio < soldierCap && state.resources.protein >= 5) {
     caste = AntCaste.Soldier;
     state.resources.protein -= 2;
   } else if (scoutRatio < 0.05) {
@@ -972,7 +999,7 @@ function queenLayEggs(state: GameState) {
     caste = AntCaste.Nurse;
   } else if (workerRatio < 0.5) {
     caste = AntCaste.Worker;
-  } else if (soldierRatio < 0.1 && state.resources.protein >= 3) {
+  } else if (soldierRatio < Math.max(0.1, soldierCap * 0.7) && state.resources.protein >= 3) {
     caste = AntCaste.Soldier;
     state.resources.protein -= 1;
   } else if (builderRatio < 0.08) {
@@ -1159,23 +1186,44 @@ function updateWorkerAI(state: GameState, ant: Ant) {
 
   ant.stateTimer = Math.floor((25 + Math.random() * 25) * personality.workDurationMul);
 
-  // PRIORITY 1: If carrying, deliver to storage
+  // Emergency response: emit danger pheromone if a soldier died nearby
+  for (const otherAnt of state.ants) {
+    if (otherAnt.state === AntState.Dead && otherAnt.caste === AntCaste.Soldier) {
+      const dist = Math.abs(ant.x - otherAnt.x) + Math.abs(ant.y - otherAnt.y);
+      if (dist < 6) {
+        addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Danger, 0.6);
+        break;
+      }
+    }
+  }
+
+  // PRIORITY 1: If carrying, deliver to closest storage (smart delivery)
   if (ant.carrying !== null) {
+    // Find the closest food storage, not just any one
     const storage = findNearestChamber(state, ant.x, ant.y, ChamberType.FoodStorage) ||
+      findNearestChamber(state, ant.x, ant.y, ChamberType.GranaryChamber) ||
       findNearestChamber(state, ant.x, ant.y, ChamberType.QueenChamber);
 
     if (storage) {
       const dist = Math.abs(ant.x - storage.x) + Math.abs(ant.y - storage.y);
       if (dist < 3) {
-        const key = ant.carrying as keyof typeof state.resources;
+        const carriedType = ant.carrying;
+        const carriedAmount = ant.carryAmount;
+        const key = carriedType as keyof typeof state.resources;
         if (key in state.resources) {
-          (state.resources as Record<string, number>)[key] += ant.carryAmount;
+          (state.resources as Record<string, number>)[key] += carriedAmount;
         }
         ant.carrying = null;
         ant.carryAmount = 0;
         ant.state = AntState.Idle;
         ant.experience += 0.5;
-        addNotification(state, `+${Math.round(ant.carryAmount)} ${ant.carrying}`, 'info');
+        addNotification(state, `+${Math.round(carriedAmount)} ${carriedType}`, 'info');
+
+        // Remember this storage location for future deliveries
+        ant.memory.visitedChambers = [
+          ...ant.memory.visitedChambers.slice(-8),
+          `${Math.round(storage.x)},${Math.round(storage.y)}`
+        ];
       } else {
         assignPath(state, ant, storage.x, storage.y);
         ant.state = AntState.Carrying;
@@ -1214,6 +1262,12 @@ function updateWorkerAI(state: GameState, ant: Ant) {
           ant.state = AntState.Harvesting;
           ant.experience += 0.3;
           addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Food, 0.5);
+          // Remember where we picked up food for foraging efficiency
+          ant.memory.lastFoodSource = { x: deposit.x, y: deposit.y };
+          ant.memory.resourceLocations = [
+            ...ant.memory.resourceLocations.slice(-5),
+            { x: deposit.x, y: deposit.y, type: deposit.type }
+          ];
         } else {
           assignPath(state, ant, deposit.x, deposit.y);
           ant.state = AntState.Moving;
@@ -1223,13 +1277,25 @@ function updateWorkerAI(state: GameState, ant: Ant) {
         ant.state = AntState.Moving;
       }
     } else {
-      // No food pheromone to follow, go to surface deposit
-      const deposit = findNearestSurfaceDeposit(state, ant);
-      if (deposit) {
-        assignPath(state, ant, deposit.x, deposit.y);
+      // No food pheromone to follow - check memory for known resource locations first
+      const memoryFood = ant.memory.lastFoodSource;
+      if (memoryFood && Math.random() < 0.5) {
+        // Return to last known food source
+        assignPath(state, ant, memoryFood.x, memoryFood.y);
+        ant.state = AntState.Moving;
+      } else if (ant.memory.resourceLocations.length > 0 && Math.random() < 0.4) {
+        // Try a known resource location from memory
+        const loc = ant.memory.resourceLocations[Math.floor(Math.random() * ant.memory.resourceLocations.length)];
+        assignPath(state, ant, loc.x, loc.y);
         ant.state = AntState.Moving;
       } else {
-        wanderAnt(state, ant);
+        const deposit = findNearestSurfaceDeposit(state, ant);
+        if (deposit) {
+          assignPath(state, ant, deposit.x, deposit.y);
+          ant.state = AntState.Moving;
+        } else {
+          wanderAnt(state, ant);
+        }
       }
     }
   } else if (pheromoneDir === PheromoneType.Excavate) {
@@ -1265,13 +1331,25 @@ function updateWorkerAI(state: GameState, ant: Ant) {
       }
     }
   } else {
-    // PRIORITY 4: Default behavior - collect food
-    const deposit = findNearestSurfaceDeposit(state, ant);
-    if (deposit && Math.random() < 0.6) {
-      assignPath(state, ant, deposit.x, deposit.y);
+    // PRIORITY 4: Default behavior - check memory first, then collect food
+    const memoryFood = ant.memory.lastFoodSource;
+    if (memoryFood && Math.random() < 0.4) {
+      // Return to last known food source for foraging efficiency
+      assignPath(state, ant, memoryFood.x, memoryFood.y);
+      ant.state = AntState.Moving;
+    } else if (ant.memory.resourceLocations.length > 0 && Math.random() < 0.3) {
+      // Try a known resource location from memory
+      const loc = ant.memory.resourceLocations[Math.floor(Math.random() * ant.memory.resourceLocations.length)];
+      assignPath(state, ant, loc.x, loc.y);
       ant.state = AntState.Moving;
     } else {
-      wanderAnt(state, ant);
+      const deposit = findNearestSurfaceDeposit(state, ant);
+      if (deposit && Math.random() < 0.6) {
+        assignPath(state, ant, deposit.x, deposit.y);
+        ant.state = AntState.Moving;
+      } else {
+        wanderAnt(state, ant);
+      }
     }
   }
 }
@@ -1280,7 +1358,7 @@ function updateWorkerAI(state: GameState, ant: Ant) {
 function updateScoutAI(state: GameState, ant: Ant) {
   const personality = PERSONALITY_MODIFIERS[ant.personality] || PERSONALITY_MODIFIERS.curious;
 
-  if (ant.state !== AntState.Idle && ant.state !== AntState.Moving && ant.stateTimer > 0) {
+  if (ant.state !== AntState.Idle && ant.state !== AntState.Moving && ant.state !== AntState.Exploring && ant.stateTimer > 0) {
     ant.stateTimer--;
     return;
   }
@@ -1303,27 +1381,44 @@ function updateScoutAI(state: GameState, ant: Ant) {
       }
     }
 
-    // Mark danger
+    // Danger reporting: emit strong danger pheromone AND flee when spotting enemies
     for (const enemy of state.enemies) {
       const dist = Math.abs(ant.x - enemy.x) + Math.abs(ant.y - enemy.y);
-      if (dist < enemy.aggroRange) {
-        addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Danger, 0.5);
-        // Flee back to colony
-        if (personality.fleeThresholdMul > 0.5) {
-          const entrance = findEntrance(state);
-          if (entrance) {
-            assignPath(state, ant, entrance.x, entrance.y);
-            ant.state = AntState.Fleeing;
-            return;
-          }
+      if (dist < enemy.aggroRange * 1.5) {
+        // Emit danger pheromone more frequently and at higher strength
+        addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Danger, 0.8);
+        addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Defend, 0.4);
+        ant.memory.lastDangerLocation = { x: Math.round(enemy.x), y: Math.round(enemy.y) };
+        // Flee back to colony immediately
+        const entrance = findEntrance(state);
+        if (entrance) {
+          assignPath(state, ant, entrance.x, entrance.y);
+          ant.state = AntState.Fleeing;
+          return;
         }
       }
     }
 
-    // Continue exploring
-    const surfaceX = Math.floor(Math.random() * MAP_WIDTH);
-    const surfaceY = 4 + Math.floor(Math.random() * 4);
-    if (assignPath(state, ant, surfaceX, surfaceY)) {
+    // Systematic exploration: expanding spiral pattern instead of random
+    // Use time-based spiral offset for systematic coverage
+    const spiralAngle = (ant.experience * 0.8) + (ant.id.charCodeAt(1) || 0) * 0.5;
+    const spiralRadius = 5 + Math.min(ant.experience * 2, 30);
+    const homeX = ant.memory.homePosition.x;
+    const homeY = ant.memory.homePosition.y;
+    let targetX = Math.round(homeX + Math.cos(spiralAngle) * spiralRadius);
+    let targetY = Math.round(4 + Math.sin(spiralAngle) * 3); // Stay on surface
+
+    // Clamp to surface bounds
+    targetX = Math.max(2, Math.min(MAP_WIDTH - 3, targetX));
+    targetY = Math.max(4, Math.min(SURFACE_ROW - 1, targetY));
+
+    // Mix systematic exploration with some randomness for variety
+    if (Math.random() < 0.3) {
+      targetX = Math.floor(Math.random() * MAP_WIDTH);
+      targetY = 4 + Math.floor(Math.random() * 4);
+    }
+
+    if (assignPath(state, ant, targetX, targetY)) {
       ant.state = AntState.Exploring;
     }
   } else {
@@ -1337,9 +1432,9 @@ function updateScoutAI(state: GameState, ant: Ant) {
     }
   }
 
-  // Scout emits explore pheromone
-  if (state.tick % 8 === 0) {
-    addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Explore, 0.3);
+  // Trail marking: emit explore pheromones more frequently (every 5 ticks instead of 8)
+  if (state.tick % 5 === 0) {
+    addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Explore, 0.4);
   }
 }
 
@@ -1353,6 +1448,20 @@ function updateSoldierAI(state: GameState, ant: Ant) {
   }
 
   ant.stateTimer = Math.floor((20 + Math.random() * 15));
+
+  // Retreat when low health (< 20%)
+  if (ant.health < ant.maxHealth * 0.2 && ant.state !== AntState.Fleeing) {
+    const barracks = findNearestChamber(state, ant.x, ant.y, ChamberType.Barracks);
+    const homeChamber = findNearestChamber(state, ant.x, ant.y, ChamberType.QueenChamber);
+    const retreatTarget = barracks || homeChamber;
+    if (retreatTarget) {
+      assignPath(state, ant, retreatTarget.x, retreatTarget.y);
+      ant.state = AntState.Fleeing;
+      // Emit danger pheromone while retreating
+      addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Defend, 0.3);
+      return;
+    }
+  }
 
   // Check for defend pheromone or nearby enemies
   const pheromoneDir = getStrongestPheromone(state, Math.round(ant.x), Math.round(ant.y));
@@ -1370,6 +1479,20 @@ function updateSoldierAI(state: GameState, ant: Ant) {
     }
     // Emit alarm pheromone
     addPheromone(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Defend, 0.5);
+
+    // Spread out from other soldiers fighting the same enemy (formation)
+    const nearbyAllies = state.ants.filter(a =>
+      a.caste === AntCaste.Soldier && a.state === AntState.Fighting &&
+      a.id !== ant.id && Math.abs(a.x - ant.x) + Math.abs(a.y - ant.y) < 3
+    );
+    if (nearbyAllies.length > 0) {
+      // Offset position to spread formation
+      const offsetAngle = (nearbyAllies.indexOf(ant) ?? 0) * (Math.PI * 2 / Math.max(nearbyAllies.length, 1));
+      const offsetDist = 2;
+      const formX = Math.round(nearestEnemy.x + Math.cos(offsetAngle) * offsetDist);
+      const formY = Math.round(nearestEnemy.y + Math.sin(offsetAngle) * offsetDist);
+      assignPath(state, ant, formX, formY);
+    }
   } else if (pheromoneDir === PheromoneType.Defend || pheromoneDir === PheromoneType.Danger) {
     // Follow defend pheromone to danger
     const target = getPheromoneDirection(state, Math.round(ant.x), Math.round(ant.y), PheromoneType.Danger) ||
@@ -1379,14 +1502,27 @@ function updateSoldierAI(state: GameState, ant: Ant) {
       ant.state = AntState.Fighting;
     }
   } else {
-    // Patrol near entrances or barracks
+    // Patrol between key chambers (queen chamber, entrances, barracks)
     const barracks = findNearestChamber(state, ant.x, ant.y, ChamberType.Barracks);
+    const queenChamber = findNearestChamber(state, ant.x, ant.y, ChamberType.QueenChamber);
     const entrance = findEntrance(state);
-    const patrolTarget = barracks || entrance;
 
-    if (patrolTarget) {
-      const patrolX = patrolTarget.x + (Math.random() - 0.5) * 8;
-      const patrolY = patrolTarget.y + (Math.random() - 0.5) * 4;
+    // Cycle between patrol points
+    const patrolPoints: { x: number; y: number }[] = [];
+    if (queenChamber) patrolPoints.push(queenChamber);
+    if (entrance) patrolPoints.push(entrance);
+    if (barracks) patrolPoints.push(barracks);
+
+    if (patrolPoints.length > 0) {
+      // Choose the patrol point farthest from current position for better coverage
+      patrolPoints.sort((a, b) => {
+        const distA = Math.abs(ant.x - a.x) + Math.abs(ant.y - a.y);
+        const distB = Math.abs(ant.x - b.x) + Math.abs(ant.y - b.y);
+        return distB - distA;
+      });
+      const target = patrolPoints[0];
+      const patrolX = target.x + (Math.random() - 0.5) * 6;
+      const patrolY = target.y + (Math.random() - 0.5) * 4;
       assignPath(state, ant, Math.round(patrolX), Math.round(patrolY));
       ant.state = AntState.Patrolling;
     } else {
@@ -1404,10 +1540,21 @@ function updateNurseAI(state: GameState, ant: Ant) {
 
   ant.stateTimer = 15 + Math.floor(Math.random() * 15);
 
-  // Find brood that needs care
+  // Priority feeding: find brood closest to hatching (highest progress) that needs care
   const needyBrood = state.brood
     .filter(b => b.needsFood || b.health < 80)
-    .sort((a, b) => a.health - b.health)[0];
+    .sort((a, b) => {
+      // Prioritize by: highest progress (closest to hatching) first, then lowest health
+      if (a.stage !== b.stage) {
+        // Larvae and pupae are closer to hatching than eggs
+        const stageOrder = { [BroodStage.Pupa]: 3, [BroodStage.Larva]: 2, [BroodStage.Egg]: 1 };
+        return (stageOrder[b.stage] || 0) - (stageOrder[a.stage] || 0);
+      }
+      // Among same stage, prioritize higher progress (closer to hatching)
+      if (Math.abs(b.progress - a.progress) > 0.1) return b.progress - a.progress;
+      // Then by health (lowest health first)
+      return a.health - b.health;
+    })[0];
 
   if (needyBrood) {
     const dist = Math.abs(ant.x - needyBrood.x) + Math.abs(ant.y - needyBrood.y);
@@ -1419,6 +1566,30 @@ function updateNurseAI(state: GameState, ant: Ant) {
         needyBrood.progress += 0.005;
       }
       ant.state = AntState.Nursing;
+
+      // Temperature management: if brood is in a bad environment, try to move it
+      const broodCell = state.map[needyBrood.y]?.[needyBrood.x];
+      if (broodCell && (broodCell.temperature < 0.25 || broodCell.temperature > 0.85)) {
+        // Find a better chamber for the brood (nursery or brood chamber with good temp)
+        let bestChamber: { x: number; y: number; temp: number } | null = null;
+        let bestTempScore = 1;
+        for (const row of state.map) {
+          for (const cell of row) {
+            if (cell.chamberType === ChamberType.NurseryChamber || cell.chamberType === ChamberType.BroodChamber) {
+              const tempDiff = Math.abs(cell.temperature - 0.55);
+              if (tempDiff < bestTempScore) {
+                bestTempScore = tempDiff;
+                bestChamber = { x: cell.x, y: cell.y, temp: cell.temperature };
+              }
+            }
+          }
+        }
+        if (bestChamber) {
+          // Move the brood to a better chamber
+          needyBrood.x = bestChamber.x;
+          needyBrood.y = bestChamber.y;
+        }
+      }
     } else {
       assignPath(state, ant, needyBrood.x, needyBrood.y);
       ant.state = AntState.Nursing;
@@ -1480,17 +1651,109 @@ function updateBuilderAI(state: GameState, ant: Ant) {
     // Build chamber if marked (placeholder for chamber construction AI)
     wanderAnt(state, ant);
   } else {
-    // Default: look for things to excavate nearby tunnels
-    const digTarget = findExcavatableNeighbor(state, Math.round(ant.x), Math.round(ant.y));
-    if (digTarget && Math.random() < 0.3) {
-      excavateCell(state, digTarget.x, digTarget.y);
+    // Smart excavation: prioritize digging toward unexplored areas or resource deposits
+    // Also prioritize building chambers the colony needs most
+
+    // Determine what chamber the colony needs most
+    const neededChamberType = determineNeededChamber(state);
+
+    // Smart excavation: dig toward unexplored areas
+    const currentX = Math.round(ant.x);
+    const currentY = Math.round(ant.y);
+
+    // Find nearby unexplored cells adjacent to tunnels
+    let bestDigTarget: { x: number; y: number; score: number } | null = null;
+
+    for (let dy = -4; dy <= 4; dy++) {
+      for (let dx = -4; dx <= 4; dx++) {
+        const nx = currentX + dx;
+        const ny = currentY + dy;
+        if (nx < 0 || nx >= MAP_WIDTH || ny < SURFACE_ROW || ny >= MAP_HEIGHT) continue;
+        const cell = state.map[ny][nx];
+        if (!cell.excavatable) continue;
+        if (cell.terrain !== TerrainType.Dirt && cell.terrain !== TerrainType.HardDirt &&
+          cell.terrain !== TerrainType.SurfaceDirt && cell.terrain !== TerrainType.Clay &&
+          cell.terrain !== TerrainType.Sand) continue;
+
+        // Check if this cell is adjacent to a tunnel or chamber (so it connects)
+        let adjacentToWalkable = false;
+        const dirs = [{ dx: 0, dy: -1 }, { dx: 0, dy: 1 }, { dx: -1, dy: 0 }, { dx: 1, dy: 0 }];
+        for (const dir of dirs) {
+          if (isWalkable(state.map, nx + dir.dx, ny + dir.dy)) {
+            adjacentToWalkable = true;
+            break;
+          }
+        }
+        if (!adjacentToWalkable) continue;
+
+        // Score: prefer unexplored areas and cells near resource deposits
+        let score = 0;
+        if (!cell.explored) score += 3; // Unexplored = high priority
+        // Near surface deposits = good for access tunnels
+        for (const deposit of state.surfaceDeposits) {
+          const depDist = Math.abs(nx - deposit.x) + Math.abs(ny - deposit.y);
+          if (depDist < 8) score += 2;
+        }
+        // Prefer softer terrain
+        score += (1 - cell.hardness) * 2;
+        // Prefer being near existing tunnels for connectivity
+        for (const dir of dirs) {
+          const adjCell = state.map[ny + dir.dy]?.[nx + dir.dx];
+          if (adjCell?.terrain === TerrainType.Tunnel || adjCell?.terrain === TerrainType.Chamber) {
+            score += 1;
+          }
+        }
+
+        if (!bestDigTarget || score > bestDigTarget.score) {
+          bestDigTarget = { x: nx, y: ny, score };
+        }
+      }
+    }
+
+    if (bestDigTarget && Math.random() < 0.5) {
+      // Move toward the best dig target
+      assignPath(state, ant, bestDigTarget.x, bestDigTarget.y);
       ant.state = AntState.Excavating;
       ant.stateTimer = 10;
-      state.resources.compactEarth += 0.1;
     } else {
-      wanderAnt(state, ant);
+      // Default: look for things to excavate nearby tunnels
+      const digTarget = findExcavatableNeighbor(state, Math.round(ant.x), Math.round(ant.y));
+      if (digTarget && Math.random() < 0.3) {
+        excavateCell(state, digTarget.x, digTarget.y);
+        ant.state = AntState.Excavating;
+        ant.stateTimer = 10;
+        state.resources.compactEarth += 0.1;
+      } else {
+        wanderAnt(state, ant);
+      }
     }
   }
+}
+
+// Helper: determine which chamber type the colony needs most
+function determineNeededChamber(state: GameState): ChamberType | null {
+  const chamberCounts: Partial<Record<ChamberType, number>> = {};
+  for (const row of state.map) {
+    for (const cell of row) {
+      if (cell.chamberType) {
+        chamberCounts[cell.chamberType] = (chamberCounts[cell.chamberType] || 0) + 1;
+      }
+    }
+  }
+
+  const aliveAnts = state.ants.filter(a => a.state !== AntState.Dead).length;
+
+  // Priority-based needs
+  if (!chamberCounts[ChamberType.FoodStorage] && aliveAnts > 8) return ChamberType.FoodStorage;
+  if (!chamberCounts[ChamberType.BroodChamber] && state.brood.length > 3) return ChamberType.BroodChamber;
+  if (!chamberCounts[ChamberType.Barracks] && state.enemies.length > 0) return ChamberType.Barracks;
+  if (!chamberCounts[ChamberType.FungusChamber] && state.resources.leafFragments > 5) return ChamberType.FungusChamber;
+  if (!chamberCounts[ChamberType.NurseryChamber] && state.brood.length > 6) return ChamberType.NurseryChamber;
+
+  // Add more storage if colony is large
+  if ((chamberCounts[ChamberType.FoodStorage] || 0) < 2 && aliveAnts > 15) return ChamberType.FoodStorage;
+
+  return null;
 }
 
 // --- Cultivator AI ---
@@ -1575,8 +1838,21 @@ function findChamberCenter(state: GameState, type: ChamberType): { x: number; y:
 }
 
 function findNearestChamber(state: GameState, x: number, y: number, type: ChamberType): { x: number; y: number } | null {
-  const center = findChamberCenter(state, type);
-  return center;
+  // Find the nearest chamber cell from the given position
+  let bestDist = Infinity;
+  let bestCell: { x: number; y: number } | null = null;
+  for (const row of state.map) {
+    for (const cell of row) {
+      if (cell.chamberType === type) {
+        const dist = Math.abs(cell.x - x) + Math.abs(cell.y - y);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestCell = { x: cell.x, y: cell.y };
+        }
+      }
+    }
+  }
+  return bestCell;
 }
 
 function findEntrance(state: GameState): { x: number; y: number } | null {
@@ -1677,7 +1953,7 @@ function addNotification(state: GameState, message: string, type: 'info' | 'warn
 }
 
 // ============================================================
-// ENEMY AI - Type-specific behaviors
+// ENEMY AI - Type-specific behaviors with improved intelligence
 // ============================================================
 
 function updateEnemyAI(state: GameState) {
@@ -1692,44 +1968,147 @@ function updateEnemyAI(state: GameState) {
       // Different AI per enemy type
       switch (enemy.behavior) {
         case EnemyBehavior.Hunt: {
-          // Hunt: actively seek ants
-          const nearestAnt = findNearestAnt(state, enemy);
-          if (nearestAnt && distance(enemy, nearestAnt) < enemy.aggroRange) {
-            enemy.targetX = nearestAnt.x + (Math.random() - 0.5) * 2;
-            enemy.targetY = nearestAnt.y + (Math.random() - 0.5) * 2;
+          // Hunt: actively seek ants - prefer weakest/closest prey
+          const prey = findWeakestAnt(state, enemy);
+          if (prey && distance(enemy, prey) < enemy.aggroRange) {
+            // Ambush behavior: if spider, wait until prey is very close then strike
+            if (enemy.type === EnemyType.Spider && distance(enemy, prey) > enemy.aggroRange * 0.4) {
+              // Hold position, wait for prey to come closer
+              break;
+            }
+            enemy.targetX = prey.x;
+            enemy.targetY = prey.y;
+          } else if (enemy.health < enemy.maxHealth * 0.25) {
+            // Retreat: flee away from colony when health is low
+            const entrance = findEntrance(state);
+            if (entrance) {
+              // Move away from entrance
+              const fleeX = enemy.x + (enemy.x - entrance.x) * 0.5;
+              const fleeY = enemy.y + (enemy.y - entrance.y) * 0.3;
+              enemy.targetX = Math.max(0, Math.min(MAP_WIDTH - 1, fleeX));
+              enemy.targetY = Math.max(3, Math.min(SURFACE_ROW + 5, fleeY));
+            }
           } else {
-            // Wander toward colony
+            // Wander toward colony entrance
             const entrance = findEntrance(state);
             if (entrance) {
               enemy.targetX = entrance.x + (Math.random() - 0.5) * 10;
               enemy.targetY = entrance.y + (Math.random() - 0.5) * 5;
             }
           }
+
+          // Wasp hit-and-run: attack then retreat
+          if (enemy.type === EnemyType.Wasp && prey) {
+            const distToPrey = distance(enemy, prey);
+            if (distToPrey < 2) {
+              // Just attacked, now retreat
+              const retreatAngle = Math.atan2(enemy.y - prey.y, enemy.x - prey.x);
+              enemy.targetX = enemy.x + Math.cos(retreatAngle) * 6;
+              enemy.targetY = enemy.y + Math.sin(retreatAngle) * 4;
+              enemy.targetX = Math.max(0, Math.min(MAP_WIDTH - 1, enemy.targetX));
+              enemy.targetY = Math.max(3, Math.min(SURFACE_ROW + 5, enemy.targetY));
+            }
+          }
           break;
         }
         case EnemyBehavior.Raid: {
-          // Raid: move in groups toward colony
-          const entrance = findEntrance(state);
-          if (entrance) {
-            enemy.targetX = entrance.x + (Math.random() - 0.5) * 4;
-            enemy.targetY = entrance.y + Math.random() * 3;
+          // Raid: target resource chambers specifically and steal food
+          const foodStorage = findNearestChamber(state, enemy.x, enemy.y, ChamberType.FoodStorage);
+          const granary = findNearestChamber(state, enemy.x, enemy.y, ChamberType.GranaryChamber);
+          const target = foodStorage || granary;
+
+          if (target && distance(enemy, target) < 3) {
+            // Steal food from the chamber
+            const stealAmount = Math.min(3, state.resources.food);
+            if (stealAmount > 0) {
+              state.resources.food -= stealAmount;
+              addNotification(state, `Rival ants stole ${Math.round(stealAmount)} food!`, 'danger');
+              // After stealing, flee back
+              const fleeAngle = Math.atan2(enemy.y - target.y, enemy.x - target.x);
+              enemy.targetX = enemy.x + Math.cos(fleeAngle) * 15;
+              enemy.targetY = Math.max(3, Math.min(SURFACE_ROW + 3, enemy.y - 3));
+              enemy.targetX = Math.max(0, Math.min(MAP_WIDTH - 1, enemy.targetX));
+            }
+          } else if (target) {
+            // Move toward food storage
+            enemy.targetX = target.x + (Math.random() - 0.5) * 3;
+            enemy.targetY = target.y + (Math.random() - 0.5) * 2;
+          } else {
+            // No storage found, go to entrance
+            const entrance = findEntrance(state);
+            if (entrance) {
+              enemy.targetX = entrance.x + (Math.random() - 0.5) * 4;
+              enemy.targetY = entrance.y + Math.random() * 3;
+            }
+          }
+
+          // Group behavior: move toward other rival ants for coordinated raids
+          const otherRivals = state.enemies.filter(e =>
+            e.type === EnemyType.RivalAnt && e.id !== enemy.id &&
+            distance(e, enemy) < 15
+          );
+          if (otherRivals.length > 0) {
+            // Move toward the group center for coordination
+            const groupCenterX = otherRivals.reduce((sum, e) => sum + e.x, 0) / otherRivals.length;
+            const groupCenterY = otherRivals.reduce((sum, e) => sum + e.y, 0) / otherRivals.length;
+            // Blend target with group movement
+            enemy.targetX = enemy.targetX * 0.6 + groupCenterX * 0.4;
+            enemy.targetY = enemy.targetY * 0.6 + groupCenterY * 0.4;
           }
           break;
         }
         case EnemyBehavior.Ambush: {
-          // Ambush: stay still, attack when ant is close
+          // Antlion: create sand trap effect and pull ants
           const nearestAnt = findNearestAnt(state, enemy);
-          if (nearestAnt && distance(enemy, nearestAnt) < enemy.aggroRange) {
-            enemy.targetX = nearestAnt.x;
-            enemy.targetY = nearestAnt.y;
+          if (nearestAnt) {
+            const dist = distance(enemy, nearestAnt);
+            if (dist < enemy.aggroRange * 2) {
+              // Pull mechanic: draw the ant closer when within range
+              const pullStrength = 0.15;
+              nearestAnt.x += (enemy.x - nearestAnt.x) * pullStrength;
+              nearestAnt.y += (enemy.y - nearestAnt.y) * pullStrength;
+              // Mark danger pheromone at trap location
+              addPheromone(state, Math.round(enemy.x), Math.round(enemy.y), PheromoneType.Danger, 0.3);
+            }
+            if (dist < enemy.aggroRange) {
+              enemy.targetX = nearestAnt.x;
+              enemy.targetY = nearestAnt.y;
+            }
           }
-          // Don't move otherwise
+          // Antlion stays mostly still (sand trap behavior)
+          // Only tiny movement adjustments
           break;
         }
         case EnemyBehavior.Territorial: {
-          // Territorial: patrol an area
-          enemy.targetX = enemy.x + (Math.random() - 0.5) * 8;
-          enemy.targetY = enemy.y + (Math.random() - 0.5) * 4;
+          // Territorial: patrol a specific zone around spawn area
+          // Define patrol zone around current position
+          const patrolRadius = 6;
+
+          // Check for nearby ants - warning display before attacking
+          const nearestAnt = findNearestAnt(state, enemy);
+          if (nearestAnt) {
+            const dist = distance(enemy, nearestAnt);
+            if (dist < enemy.aggroRange * 0.6 && dist > enemy.aggroRange * 0.3) {
+              // Warning display: move toward the ant aggressively but don't attack yet
+              enemy.targetX = nearestAnt.x + (Math.random() - 0.5) * 2;
+              enemy.targetY = nearestAnt.y + (Math.random() - 0.5) * 2;
+              // Emit danger pheromone as warning
+              addPheromone(state, Math.round(enemy.x), Math.round(enemy.y), PheromoneType.Danger, 0.2);
+            } else if (dist <= enemy.aggroRange * 0.3) {
+              // Close enough - attack!
+              enemy.targetX = nearestAnt.x;
+              enemy.targetY = nearestAnt.y;
+            } else {
+              // Patrol within zone
+              enemy.targetX = enemy.x + (Math.random() - 0.5) * patrolRadius;
+              enemy.targetY = enemy.y + (Math.random() - 0.5) * (patrolRadius * 0.5);
+            }
+          } else {
+            // No ants nearby - patrol the zone
+            enemy.targetX = enemy.x + (Math.random() - 0.5) * patrolRadius;
+            enemy.targetY = enemy.y + (Math.random() - 0.5) * (patrolRadius * 0.5);
+          }
+
           const clampedX = Math.max(0, Math.min(MAP_WIDTH - 1, enemy.targetX));
           const clampedY = Math.max(3, Math.min(SURFACE_ROW + 5, enemy.targetY));
           enemy.targetX = clampedX;
@@ -1762,6 +2141,35 @@ function updateEnemyAI(state: GameState) {
 
     enemy.stateTimer--;
   }
+}
+
+// Find the weakest/closest ant for hunting enemies (prey selection)
+function findWeakestAnt(state: GameState, enemy: Enemy): Ant | null {
+  let best: Ant | null = null;
+  let bestScore = Infinity;
+
+  for (const ant of state.ants) {
+    if (ant.state === AntState.Dead) continue;
+    const dist = distance(enemy, ant);
+    if (dist > enemy.aggroRange) continue;
+
+    // Score: prefer closer ants AND ants with lower health (easier prey)
+    // Lower score = higher priority
+    const distScore = dist * 2;
+    const healthScore = ant.health / ant.maxHealth * 5; // Weaker ants score lower
+    const casteBonus = ant.caste === AntCaste.Queen ? -10 : // Queen is top target
+      ant.caste === AntCaste.Nurse ? -3 : // Easy prey
+        ant.caste === AntCaste.Worker ? -1 : // Normal prey
+          ant.caste === AntCaste.Soldier ? 5 : // Dangerous
+            0;
+    const score = distScore + healthScore + casteBonus;
+
+    if (score < bestScore) {
+      bestScore = score;
+      best = ant;
+    }
+  }
+  return best;
 }
 
 function findNearestAnt(state: GameState, enemy: Enemy): Ant | null {
@@ -1865,8 +2273,9 @@ function decayPheromones(state: GameState) {
 }
 
 function diffusePheromones(state: GameState) {
-  // Spread pheromones to nearby cells (simplified diffusion)
+  // Spread pheromones to nearby cells - optimized: only process cells with pheromones
   if (state.tick % 5 !== 0) return;
+  if (state.pheromoneMap.size === 0) return;
 
   const additions: { x: number; y: number; type: PheromoneType; strength: number }[] = [];
 
@@ -1912,20 +2321,54 @@ function diffusePheromones(state: GameState) {
 function updateInfluenceMap(state: GameState) {
   if (state.tick % 10 !== 0) return;
 
-  for (let y = 0; y < MAP_HEIGHT; y++) {
-    for (let x = 0; x < MAP_WIDTH; x++) {
-      const cell = state.influenceMap[y]?.[x];
-      if (!cell) continue;
+  // Only update cells near ants and enemies (not entire 100x70 grid)
+  const cellsToUpdate = new Set<string>();
 
-      // Decay
-      cell.collectPressure *= 0.95;
-      cell.defendPressure *= 0.95;
-      cell.explorePressure *= 0.95;
-      cell.dangerLevel *= 0.95;
-      cell.foodAttraction *= 0.95;
-      cell.homeAttraction *= 0.95;
+  // Mark cells near ants for update
+  for (const ant of state.ants) {
+    if (ant.state === AntState.Dead) continue;
+    const ax = Math.round(ant.x);
+    const ay = Math.round(ant.y);
+    const r = 3;
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const nx = ax + dx;
+        const ny = ay + dy;
+        if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT) {
+          cellsToUpdate.add(`${nx},${ny}`);
+        }
+      }
     }
   }
+
+  // Mark cells near enemies for update
+  for (const enemy of state.enemies) {
+    const ex = Math.round(enemy.x);
+    const ey = Math.round(enemy.y);
+    const r = 6;
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const nx = ex + dx;
+        const ny = ey + dy;
+        if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT) {
+          cellsToUpdate.add(`${nx},${ny}`);
+        }
+      }
+    }
+  }
+
+  // Decay and update only marked cells
+  cellsToUpdate.forEach(key => {
+    const [cx, cy] = key.split(',').map(Number);
+    const cell = state.influenceMap[cy]?.[cx];
+    if (!cell) return;
+    cell.collectPressure *= 0.95;
+    cell.defendPressure *= 0.95;
+    cell.explorePressure *= 0.95;
+    cell.dangerLevel *= 0.95;
+    cell.foodAttraction *= 0.95;
+    cell.homeAttraction *= 0.95;
+  });
 
   // Ants contribute to influence
   for (const ant of state.ants) {
@@ -2096,11 +2539,33 @@ function maybeSpawnEvent(state: GameState) {
   if (Math.random() > prob) return;
 
   const eventTypes = Object.values(EventType);
-  // Weight events by day - more severe events later
+
+  // Contextual event weighting: more context-aware events
   const weights = eventTypes.map(type => {
     const info = EVENT_INFO[type];
     if (info.severity > state.day / 5) return 0.1; // Don't spawn severe events too early
-    return info.severity < 3 ? 2 : 1;
+
+    // Contextual boosts
+    let weight = info.severity < 3 ? 2 : 1;
+
+    // Rain after drought
+    const hasDrought = state.events.some(e => e.type === EventType.Drought);
+    if (type === EventType.Rain && hasDrought) weight *= 3;
+
+    // Enemy raids when colony is large
+    const livingAnts = state.ants.filter(a => a.state !== AntState.Dead).length;
+    if (type === EventType.EnemyRaid && livingAnts > 20) weight *= 2;
+    if (type === EventType.EnemyRaid && livingAnts > 40) weight *= 1.5;
+
+    // Cold snap during heat wave and vice versa
+    const hasHeatWave = state.events.some(e => e.type === EventType.HeatWave);
+    if (type === EventType.ColdSnap && hasHeatWave) weight *= 2;
+
+    // Flood during rain
+    const hasRain = state.events.some(e => e.type === EventType.Rain);
+    if (type === EventType.Flood && hasRain) weight *= 2.5;
+
+    return weight;
   });
 
   const totalWeight = weights.reduce((a, b) => a + b, 0);
@@ -2146,7 +2611,11 @@ function maybeSpawnEvent(state: GameState) {
 function maybeSpawnSurfaceResources(state: GameState) {
   if (state.tick % 250 !== 0) return;
   if (state.surfaceDeposits.length >= 20) return;
-  if (Math.random() > 0.5) return;
+
+  // Scarcity mechanic: regeneration slows as more deposits are depleted
+  const depletedCount = state.surfaceDeposits.filter(d => d.depleted || d.amount < d.maxAmount * 0.3).length;
+  const scarcityFactor = Math.max(0.1, 1 - depletedCount * 0.08); // Harder to find resources when many depleted
+  if (Math.random() > 0.5 * scarcityFactor) return;
 
   const types = [ResourceType.Food, ResourceType.Protein, ResourceType.Sugar, ResourceType.Water, ResourceType.LeafFragments, ResourceType.Nectar];
   const type = types[Math.floor(Math.random() * types.length)];
@@ -2156,7 +2625,7 @@ function maybeSpawnSurfaceResources(state: GameState) {
     x: 3 + Math.floor(Math.random() * (MAP_WIDTH - 6)),
     y: 4 + Math.floor(Math.random() * 4),
     type,
-    amount: 20 + Math.floor(Math.random() * 30),
+    amount: Math.floor((20 + Math.floor(Math.random() * 30)) * scarcityFactor),
     maxAmount: 50,
     surface: true,
     respawnRate: 0.3 + Math.random() * 1,
@@ -2168,7 +2637,9 @@ function maybeSpawnEnemies(state: GameState) {
   // Spawn rate increases with colony size and day
   const spawnInterval = Math.max(150, 500 - state.day * 5 - state.ants.length * 2);
   if (state.tick % spawnInterval !== 0) return;
-  if (state.enemies.length >= 8 + state.day) return;
+  // Enemy cap scales with colony size
+  const maxEnemies = 8 + state.day + Math.floor(state.ants.filter(a => a.state !== AntState.Dead).length * 0.1);
+  if (state.enemies.length >= maxEnemies) return;
 
   const prob = 0.3 + state.day * 0.01;
   if (Math.random() > prob) return;
@@ -2185,10 +2656,13 @@ function spawnEnemyAtEdge(state: GameState) {
     }
   }
 
-  // Stronger enemies appear later
+  // Stronger enemies appear later, and scale with colony size
+  const livingAnts = state.ants.filter(a => a.state !== AntState.Dead).length;
+  const colonyScale = Math.max(1, livingAnts / 15); // Scale factor based on colony size
+
   const availableTypes = weighted.filter(type => {
     const stats = ENEMY_STATS[type];
-    return stats.maxHealth <= 30 + state.day * 5;
+    return stats.maxHealth <= 30 + state.day * 5 + colonyScale * 10;
   });
 
   const type = availableTypes.length > 0
@@ -2199,7 +2673,17 @@ function spawnEnemyAtEdge(state: GameState) {
   const x = side ? Math.floor(Math.random() * 8) : MAP_WIDTH - 1 - Math.floor(Math.random() * 8);
   const y = 3 + Math.floor(Math.random() * 5);
 
-  state.enemies.push(createEnemy(type, x, y));
+  const enemy = createEnemy(type, x, y);
+
+  // Scale enemy stats with colony size for bigger challenge
+  if (colonyScale > 1.5) {
+    const scaleMul = 1 + (colonyScale - 1.5) * 0.15;
+    enemy.maxHealth = Math.floor(enemy.maxHealth * scaleMul);
+    enemy.health = enemy.maxHealth;
+    enemy.attack = Math.floor(enemy.attack * (1 + (colonyScale - 1.5) * 0.1));
+  }
+
+  state.enemies.push(enemy);
 }
 
 // ============================================================

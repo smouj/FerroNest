@@ -425,5 +425,5 @@ export interface RenderParticle {
   maxLife: number;
   color: string;
   size: number;
-  type: 'dust' | 'spore' | 'spark' | 'rain' | 'dig' | 'combat' | 'pheromone' | 'glow';
+  type: 'dust' | 'spore' | 'spark' | 'rain' | 'dig' | 'combat' | 'pheromone' | 'glow' | 'bubble';
 }

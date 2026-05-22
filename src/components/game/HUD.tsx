@@ -17,16 +17,16 @@ import {
 } from '@/components/ui/tooltip';
 
 const RESOURCE_ICONS: Record<string, string> = {
-  food: '🍎',
-  protein: '🥩',
-  sugar: '🍬',
-  fungus: '🍄',
-  water: '💧',
-  pheromones: '🧪',
-  biomass: '🧬',
-  compactEarth: '🪨',
-  nectar: '🍯',
-  leafFragments: '🍃',
+  food: '●',
+  protein: '◆',
+  sugar: '◇',
+  fungus: '✦',
+  water: '▽',
+  pheromones: '◎',
+  biomass: '⬡',
+  compactEarth: '■',
+  nectar: '◉',
+  leafFragments: '♣',
 };
 
 const RESOURCE_NAMES: Record<string, string> = {
@@ -50,13 +50,13 @@ const PHASE_COLORS: Record<GamePhase, string> = {
 };
 
 const CASTE_ICONS: Record<AntCaste, string> = {
-  [AntCaste.Queen]: '♛',
+  [AntCaste.Queen]: '▲',
   [AntCaste.Worker]: '⛏',
-  [AntCaste.Scout]: '🔭',
+  [AntCaste.Scout]: '◎',
   [AntCaste.Soldier]: '⚔',
   [AntCaste.Nurse]: '♥',
-  [AntCaste.Builder]: '🏗',
-  [AntCaste.Cultivator]: '🌿',
+  [AntCaste.Builder]: '▣',
+  [AntCaste.Cultivator]: '✦',
 };
 
 export function HUD() {
@@ -73,7 +73,7 @@ export function HUD() {
   const queenMaxHealth = queen?.maxHealth || 1;
 
   // Time of day icon
-  const timeIcon = timeOfDay > 0.25 && timeOfDay < 0.75 ? '☀' : '🌙';
+  const timeIcon = timeOfDay > 0.25 && timeOfDay < 0.75 ? '◉' : '○';
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -87,7 +87,7 @@ export function HUD() {
               {gamePhase}
             </Badge>
             <span className="text-amber-200/30 text-[10px] font-mono">
-              {paused ? '⏸' : `${speed}x`}
+              {paused ? '‖' : `${speed}x`}
             </span>
           </div>
 
@@ -123,7 +123,7 @@ export function HUD() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <div className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[11px] ${queenAlive ? 'bg-amber-900/30' : 'bg-red-900/40'}`}>
-                  <span className="text-xs">♛</span>
+                  <span className="text-xs">▲</span>
                   <span className={queenAlive ? 'text-amber-300' : 'text-red-500'}>
                     {queenAlive ? `${Math.round(queenHealth)}` : '✗'}
                   </span>
@@ -137,7 +137,7 @@ export function HUD() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <div className="flex items-center gap-0.5 px-1.5 py-0.5 bg-black/40 rounded text-[11px]">
-                  <span className="text-xs">🐜</span>
+                  <span className="text-xs">⊕</span>
                   <span className="text-amber-200/80 font-mono">{livingAnts.length}</span>
                 </div>
               </TooltipTrigger>
@@ -197,7 +197,7 @@ export function HUD() {
                   key={i}
                   className="flex items-center gap-1.5 px-2 py-1 bg-black/80 rounded text-[10px] border border-red-900/30 backdrop-blur-sm"
                 >
-                  <span className="text-red-400 animate-pulse">⚠</span>
+                  <span className="text-red-400 animate-pulse">△</span>
                   <span style={{ color: info.color }} className="font-bold">{info.name}</span>
                   <div className="w-10 h-1 bg-gray-700 rounded-full overflow-hidden">
                     <div

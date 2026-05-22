@@ -61,7 +61,7 @@ export function ToolBar() {
                     className="h-6 w-6 p-0 text-[10px] border-amber-900/30"
                     onClick={togglePaused}
                   >
-                    {paused ? '▶' : '⏸'}
+                    {paused ? '▶' : '‖'}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Pause/Resume (Space)</TooltipContent>
@@ -143,7 +143,7 @@ export function ToolBar() {
                           <p className="font-bold text-xs">{info.name}</p>
                           <p className="text-[10px] text-muted-foreground">{info.description}</p>
                           <p className="text-[10px] text-amber-400">
-                            {info.cost.compactEarth}🪨 {info.cost.biomass}🧬
+                            {info.cost.compactEarth}■ {info.cost.biomass}⬡
                           </p>
                           <p className="text-[10px] text-emerald-400">{info.effect}</p>
                         </TooltipContent>
@@ -239,7 +239,7 @@ export function ToolBar() {
                         onClick={() => canUse && activateMind(ability.type)}
                         disabled={!canUse}
                       >
-                        {ability.active ? '⚡' : ''}{info.name.split(' ')[0]}
+                        {ability.active ? '✦' : ''}{info.name.split(' ')[0]}
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
