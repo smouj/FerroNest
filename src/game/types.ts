@@ -1,5 +1,5 @@
 // ============================================================
-// FerroNest - Core Game Types
+// FerroNest - Core Game Types (Professional Edition)
 // ============================================================
 
 // --- Map & Terrain ---
@@ -15,6 +15,8 @@ export enum TerrainType {
   Chamber = 'chamber',
   Water = 'water',
   Roots = 'roots',
+  Clay = 'clay',
+  Sand = 'sand',
 }
 
 export enum ChamberType {
@@ -26,6 +28,8 @@ export enum ChamberType {
   PheromoneChamber = 'pheromone_chamber',
   WasteChamber = 'waste_chamber',
   HumidityChamber = 'humidity_chamber',
+  NurseryChamber = 'nursery_chamber',
+  GranaryChamber = 'granary_chamber',
 }
 
 export interface Cell {
@@ -33,15 +37,20 @@ export interface Cell {
   y: number;
   terrain: TerrainType;
   chamberType?: ChamberType;
-  hardness: number; // 0-1, how hard to excavate
-  humidity: number; // 0-1
-  temperature: number; // 0-1
-  contamination: number; // 0-1, disease level
-  waterLevel: number; // 0-1, flooding
+  hardness: number;
+  humidity: number;
+  temperature: number;
+  contamination: number;
+  waterLevel: number;
   excavatable: boolean;
+  explored: boolean; // Fog of war
+  lightLevel: number; // 0-1, for visual atmosphere
+  tunnelQuality: number; // 0-1, affects ant speed
+  soilNutrients: number; // For fungus growth
 }
 
 // --- Ants & Castes ---
+
 export enum AntCaste {
   Queen = 'queen',
   Worker = 'worker',
@@ -64,20 +73,44 @@ export enum AntState {
   Fleeing = 'fleeing',
   Exploring = 'exploring',
   Dead = 'dead',
+  Resting = 'resting',
+  Returning = 'returning',
+  Harvesting = 'harvesting',
+  Patrolling = 'patrolling',
+  Cultivating = 'cultivating',
+}
+
+export enum AntPersonality {
+  Diligent = 'diligent',     // Works longer before resting
+  Brave = 'brave',           // Less likely to flee
+  Curious = 'curious',       // Explores further
+  Cautious = 'cautious',     // Avoids danger
+  Aggressive = 'aggressive', // Attacks enemies on sight
+  Social = 'social',         // Stays near other ants
+}
+
+export interface AntMemory {
+  lastFoodSource: { x: number; y: number } | null;
+  lastDangerLocation: { x: number; y: number } | null;
+  homePosition: { x: number; y: number };
+  visitedChambers: string[];
+  resourceLocations: { x: number; y: number; type: ResourceType }[];
+  dangerTimer: number; // ticks since last danger
 }
 
 export interface Ant {
   id: string;
   caste: AntCaste;
   state: AntState;
+  prevState: AntState;
   x: number;
   y: number;
   targetX: number;
   targetY: number;
   health: number;
   maxHealth: number;
-  hunger: number; // 0-1, 0 = full, 1 = starving
-  age: number; // ticks
+  hunger: number;
+  age: number;
   maxAge: number;
   speed: number;
   attack: number;
@@ -88,9 +121,18 @@ export interface Ant {
   pathIndex: number;
   stateTimer: number;
   assignedChamber?: { x: number; y: number };
+  personality: AntPersonality;
+  memory: AntMemory;
+  fatigue: number; // 0-1, need to rest when high
+  experience: number; // Increases with tasks done
+  loyalty: number; // Affects colony mind charge rate
+  lastPheromoneTick: number; // Cooldown for pheromone emission
+  facingAngle: number; // For smooth rotation
+  animationFrame: number; // For leg animation
 }
 
 // --- Resources ---
+
 export enum ResourceType {
   Food = 'food',
   Protein = 'protein',
@@ -99,6 +141,8 @@ export enum ResourceType {
   Water = 'water',
   Biomass = 'biomass',
   CompactEarth = 'compact_earth',
+  Nectar = 'nectar',
+  LeafFragments = 'leaf_fragments',
 }
 
 export interface ResourceDeposit {
@@ -108,7 +152,9 @@ export interface ResourceDeposit {
   type: ResourceType;
   amount: number;
   maxAmount: number;
-  surface: boolean; // on surface or underground
+  surface: boolean;
+  respawnRate: number; // Amount regenerated per day
+  depleted: boolean;
 }
 
 export interface ColonyResources {
@@ -120,9 +166,12 @@ export interface ColonyResources {
   pheromones: number;
   biomass: number;
   compactEarth: number;
+  nectar: number;
+  leafFragments: number;
 }
 
 // --- Pheromones ---
+
 export enum PheromoneType {
   Collect = 'collect',
   Excavate = 'excavate',
@@ -131,16 +180,31 @@ export enum PheromoneType {
   Explore = 'explore',
   Attack = 'attack',
   HighPriority = 'high_priority',
+  Home = 'home',
+  Food = 'food',
+  Danger = 'danger',
 }
 
 export interface PheromoneCell {
   type: PheromoneType;
-  strength: number; // 0-1
+  strength: number;
   x: number;
   y: number;
+  age: number; // For visualization fading
+}
+
+// --- Influence Map ---
+export interface InfluenceCell {
+  collectPressure: number;
+  defendPressure: number;
+  explorePressure: number;
+  dangerLevel: number;
+  foodAttraction: number;
+  homeAttraction: number;
 }
 
 // --- Enemies ---
+
 export enum EnemyType {
   Spider = 'spider',
   Beetle = 'beetle',
@@ -148,6 +212,17 @@ export enum EnemyType {
   Wasp = 'wasp',
   RivalAnt = 'rival_ant',
   Termite = 'termite',
+  Antlion = 'antlion',
+  Mite = 'mite',
+}
+
+export enum EnemyBehavior {
+  Wander = 'wander',
+  Hunt = 'hunt',
+  Raid = 'raid',
+  Flee = 'flee',
+  Ambush = 'ambush',
+  Territorial = 'territorial',
 }
 
 export interface Enemy {
@@ -164,9 +239,15 @@ export interface Enemy {
   path: { x: number; y: number }[];
   pathIndex: number;
   stateTimer: number;
+  behavior: EnemyBehavior;
+  aggroRange: number;
+  lootTable: { type: ResourceType; amount: number }[];
+  animationFrame: number;
+  facingAngle: number;
 }
 
 // --- Events ---
+
 export enum EventType {
   Rain = 'rain',
   Drought = 'drought',
@@ -175,20 +256,26 @@ export enum EventType {
   HeatWave = 'heat_wave',
   ToxicFungus = 'toxic_fungus',
   Pesticide = 'pesticide',
-  EnemyRaid = 'enemy_raid',
+  EnemyRaid = 'enemy_aid',
+  Earthquake = 'earthquake',
+  Flood = 'flood',
 }
 
 export interface GameEvent {
   type: EventType;
-  timer: number; // remaining ticks
+  timer: number;
   maxTimer: number;
-  intensity: number; // 0-1
+  intensity: number;
   affectedArea?: { x: number; y: number; radius: number };
+  announced: boolean;
 }
 
 // --- Colony Mind ---
+
 export interface ColonyMind {
-  consciousness: number; // 0-100
+  consciousness: number;
+  maxConsciousness: number;
+  chargeRate: number;
   abilities: MindAbility[];
 }
 
@@ -211,7 +298,26 @@ export interface MindAbility {
   remainingDuration: number;
 }
 
+// --- Evolution ---
+
+export enum EvolutionBranch {
+  Military = 'military',
+  Agricultural = 'agricultural',
+  Explorer = 'explorer',
+  Subterranean = 'subterranean',
+  Chemical = 'chemical',
+}
+
+export interface EvolutionUpgrade {
+  branch: EvolutionBranch;
+  level: number;
+  unlocked: boolean;
+  description: string;
+  effect: string;
+}
+
 // --- Game State ---
+
 export enum GamePhase {
   Survival = 'survival',
   Expansion = 'expansion',
@@ -227,6 +333,7 @@ export enum GameTool {
   Evacuate = 'evacuate',
   Defend = 'defend',
   Expand = 'expand',
+  Select = 'select',
 }
 
 export interface GameState {
@@ -234,8 +341,9 @@ export interface GameState {
   paused: boolean;
   tick: number;
   day: number;
-  dayProgress: number; // 0-1
-  speed: number; // 1, 2, 3
+  dayProgress: number;
+  speed: number;
+  timeOfDay: number; // 0-1, 0=midnight, 0.5=noon
 
   map: Cell[][];
   ants: Ant[];
@@ -243,29 +351,39 @@ export interface GameState {
   resources: ColonyResources;
   surfaceDeposits: ResourceDeposit[];
   pheromoneMap: Map<string, PheromoneCell>;
+  influenceMap: InfluenceCell[][];
   events: GameEvent[];
   colonyMind: ColonyMind;
+  evolutions: EvolutionUpgrade[];
 
   // Stats
   totalAntsHatched: number;
   totalAntsLost: number;
   queenAlive: boolean;
   gamePhase: GamePhase;
+  colonyScore: number;
 
   // UI State
   selectedTool: GameTool;
   selectedChamberType: ChamberType;
   selectedPheromoneType: PheromoneType;
   showPheromoneView: boolean;
+  showInfluenceView: boolean;
+  showMinimap: boolean;
   cameraX: number;
   cameraY: number;
   zoom: number;
+  hoveredCell: { x: number; y: number } | null;
+  selectedAnt: string | null;
 
   // Brood
   brood: Brood[];
 
   // Notifications
   notifications: GameNotification[];
+
+  // Ambient
+  ambientLight: number; // 0-1, affected by time of day
 }
 
 export interface GameNotification {
@@ -273,9 +391,11 @@ export interface GameNotification {
   message: string;
   type: 'info' | 'warning' | 'danger' | 'success';
   tick: number;
+  priority: number;
 }
 
 // --- Brood ---
+
 export enum BroodStage {
   Egg = 'egg',
   Larva = 'larva',
@@ -288,7 +408,22 @@ export interface Brood {
   caste: AntCaste;
   x: number;
   y: number;
-  progress: number; // 0-1, when reaches 1, advances stage or hatches
+  progress: number;
   health: number;
   needsFood: boolean;
+  temperature: number;
+}
+
+// --- Rendering ---
+
+export interface RenderParticle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  maxLife: number;
+  color: string;
+  size: number;
+  type: 'dust' | 'spore' | 'spark' | 'rain' | 'dig' | 'combat' | 'pheromone' | 'glow';
 }

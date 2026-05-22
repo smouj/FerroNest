@@ -1,5 +1,5 @@
 // ============================================================
-// FerroNest - Zustand Game Store
+// FerroNest - Zustand Game Store (Professional Edition)
 // ============================================================
 
 import { create } from 'zustand';
@@ -7,7 +7,6 @@ import { GameState, GameTool, ChamberType, PheromoneType, MindAbilityType } from
 import { createInitialState, gameTick, excavateArea, buildChamber, markPheromone, activateMindAbility, setGameSpeed, togglePause } from './engine';
 
 interface GameStore extends GameState {
-  // Actions
   init: () => void;
   tick: () => void;
   excavate: (x: number, y: number) => void;
@@ -18,10 +17,13 @@ interface GameStore extends GameState {
   setChamberType: (type: ChamberType) => void;
   setPheromoneType: (type: PheromoneType) => void;
   togglePheromoneView: () => void;
+  toggleMinimap: () => void;
   setCamera: (x: number, y: number) => void;
   setZoom: (zoom: number) => void;
   changeSpeed: (speed: number) => void;
   togglePaused: () => void;
+  setHoveredCell: (cell: { x: number; y: number } | null) => void;
+  setSelectedAnt: (id: string | null) => void;
 }
 
 export const useGameStore = create<GameStore>((set, get) => ({
@@ -65,8 +67,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setChamberType: (type: ChamberType) => set({ selectedChamberType: type }),
   setPheromoneType: (type: PheromoneType) => set({ selectedPheromoneType: type }),
   togglePheromoneView: () => set(s => ({ showPheromoneView: !s.showPheromoneView })),
+  toggleMinimap: () => set(s => ({ showMinimap: !s.showMinimap })),
   setCamera: (x: number, y: number) => set({ cameraX: x, cameraY: y }),
-  setZoom: (zoom: number) => set({ zoom: Math.max(0.5, Math.min(2, zoom)) }),
+  setZoom: (zoom: number) => set({ zoom: Math.max(0.4, Math.min(2.5, zoom)) }),
   changeSpeed: (speed: number) => {
     const state = get();
     const newState = setGameSpeed(state, speed);
@@ -77,4 +80,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const newState = togglePause(state);
     set({ paused: newState.paused });
   },
+  setHoveredCell: (cell: { x: number; y: number } | null) => set({ hoveredCell: cell }),
+  setSelectedAnt: (id: string | null) => set({ selectedAnt: id }),
 }));
